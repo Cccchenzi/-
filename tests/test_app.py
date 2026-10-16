@@ -356,7 +356,10 @@ class AppAcceptanceTests(unittest.TestCase):
             answer = result["assistant_message"]
             self.assertEqual(answer["mode"], "extractive-fallback")
             self.assertIn("七天", answer["content"])
-            self.assertIn("生成模型不可用", result["notice"])
+            self.assertEqual(answer["failure_stage"], "generation")
+            self.assertEqual(answer["failure_code"], "generation_failed")
+            self.assertIn("生成请求失败", result["notice"])
+            self.assertEqual(answer["notice"], result["notice"])
             model.assert_not_called()
         self.assertFalse(self.client.get("/api/config").get_json()["provider_configured"])
 

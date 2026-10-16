@@ -13,3 +13,25 @@
 @media(max-width:1170px){.rag-summary{margin-left:25px;margin-right:25px}.index-status-card{padding:9px}.index-status-heading>strong{font-size:9px}.index-status-heading button{font-size:8px}}
 @media(max-width:720px){.rag-summary{margin-left:18px;margin-right:18px;margin-top:11px;font-size:9px;padding:8px 10px}.conversation-context{font-size:8px}.welcome{padding-top:23px}.chatgpt-usage{margin-left:0}.chatgpt-actions .button{font-size:10px}.modal-body .chatgpt-note{font-size:10px}}
 .provider-setup{border:1px solid #dce6d3;border-radius:9px;padding:15px;margin:18px 0 14px;background:#fafcf7}.provider-setup h3{font-size:13px;font-weight:600;margin:0 0 9px}.provider-setup ol{padding-left:19px;margin:0 0 12px;font-size:11px;line-height:1.9;color:#65795c}.provider-setup li+li{margin-top:6px}.provider-key-link{display:inline-block;font-size:11px;text-decoration:underline;text-underline-offset:3px}.modal-body .provider-setup-note{font-size:10px;line-height:1.9;margin:12px 0 0;overflow-wrap:anywhere}
+
+/* Keep the grid row within the viewport so long replies scroll above the composer. */
+.app-shell{grid-template-rows:minmax(0,1fr)}
+.app-shell,.app-shell.sources-hidden{min-height:0}
+.workspace{min-height:0;overflow:hidden}
+.sidebar{min-height:0;overflow-y:auto}
+.chat-scroll,.citations-view{overscroll-behavior-y:contain}
+.citations-view{min-height:0}
+/* Error notices remain visible without covering the input or send button. */
+.toast-stack{top:84px;bottom:auto;max-height:min(240px,calc(100dvh - 240px));overflow-y:auto}
+@media(max-width:720px){.toast-stack{top:72px}}
+/* Leave room to read and send when the viewport is short or the composer expands. */
+@media(max-height:600px){
+  .toast-stack{top:64px}
+  .topbar{height:54px}
+  .conversation-topline{padding-top:8px}
+  .conversation-topline .section-eyebrow,.conversation-context,.composer-hint{display:none}
+  .conversation-topline h1{margin-top:0}
+  .rag-summary{margin-top:7px;padding-top:5px;padding-bottom:5px;max-height:58px;overflow-y:auto}
+  .composer-zone{padding-top:8px;padding-bottom:8px}
+  .composer textarea{max-height:min(150px,20dvh)}
+}

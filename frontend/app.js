@@ -213,7 +213,7 @@ function renderMessages(){
 function renderMessage(message){
   const row=el('article',`message ${message.role==='user'?'user':'assistant'}`);const avatar=el('div','message-avatar');
   if(message.role==='user')avatar.textContent=state.user?.username.slice(0,1).toUpperCase()||'我';else avatar.append(icon('sparkles'));
-  const main=el('div','message-main');const heading=el('div','message-heading');heading.append(el('strong','',message.role==='user'?'你':'知微'));if(message.role!=='user'){const mode=el('span','message-mode',modeText(message.mode));mode.dataset.mode=message.mode||'unknown';heading.append(mode);if(message.retrieval_mode==='dense'||message.retrieval_mode==='lexical')heading.append(el('span','retrieval-mode',message.retrieval_mode==='dense'?'语义向量检索':'词法检索'));}
+  const main=el('div','message-main');const heading=el('div','message-heading');heading.append(el('strong','',message.role==='user'?'你':'知微'));if(message.role!=='user'){const mode=el('span','message-mode',modeText(message.mode));mode.dataset.mode=message.mode||'unknown';heading.append(mode);const retrievalLabel=({dense:'语义向量检索',lexical:'词法检索',overview:'文档概览'})[message.retrieval_mode];if(retrievalLabel)heading.append(el('span','retrieval-mode',retrievalLabel));}
   const content=el('div','message-content');const citations=Array.isArray(message.citations)?message.citations:[];appendCitedText(content,message.content||'',citations);main.append(heading);
   if(message.mode==='extractive-fallback')main.append(el('p','message-notice',message.notice||'本次生成未成功，以下展示可用原文摘录，不是 AI 生成的回答。'));
   else if(message.notice)main.append(el('p','message-notice',message.notice));
