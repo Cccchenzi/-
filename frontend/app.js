@@ -32,7 +32,7 @@ const ICONS = {
   link:'<path d="m9 15 6-6m-7 9-2 2a4.2 4.2 0 0 1-6-6l4-4a4.2 4.2 0 0 1 6 0m4-4 2-2a4.2 4.2 0 0 1 6 6l-4 4a4.2 4.2 0 0 1-6 0" transform="translate(1 0) scale(.92)"/>'
 };
 const $ = id => document.getElementById(id);
-const state = {user:null,health:null,config:null,configError:'',modelChecking:false,modelLoading:false,modelRequest:0,modalView:null,chatgpt:null,chatgptError:'',chatgptLoading:false,chatgptBusy:false,chatgptRequest:0,chatgptConfirm:false,chatgptFlowMessage:'',oauthPopup:null,reindexing:new Set(),indexRefreshing:false,libraryLoading:false,sessionLoading:false,libraries:[],libraryId:null,documents:[],sessions:[],sessionId:null,messages:[],citations:[],nav:0,pending:new Map(),creatingSession:false,uploading:false,register:false,authBusy:false,previewRequest:0};
+const state = {user:null,health:null,config:null,configError:'',modelChecking:false,modelLoading:false,modelRequest:0,modalView:null,deepseekModels:null,deepseekDraft:'',deepseekError:'',deepseekNotice:'',deepseekLoading:false,deepseekSaving:false,deepseekRequest:0,chatgpt:null,chatgptError:'',chatgptLoading:false,chatgptBusy:false,chatgptRequest:0,chatgptConfirm:false,chatgptFlowMessage:'',oauthPopup:null,reindexing:new Set(),indexRefreshing:false,libraryLoading:false,sessionLoading:false,libraries:[],libraryId:null,documents:[],sessions:[],sessionId:null,messages:[],citations:[],nav:0,pending:new Map(),creatingSession:false,uploading:false,register:false,authBusy:false,previewRequest:0};
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -62,6 +62,7 @@ function dateText(value) { if(!value)return ''; const d=new Date(value); return 
 function sizeText(bytes) { const n=Number(bytes)||0; return n>=1048576?`${(n/1048576).toFixed(1)} MB`:n>=1024?`${Math.round(n/1024)} KB`:`${n} B`; }
 function modeText(mode) { return ({llm:'AI 生成',extractive:'原文摘录 · 未生成','extractive-fallback':'生成失败 · 已降级',refusal:'资料不足 · 未生成'})[mode]||'回答模式未记录'; }
 function ragState() { return state.config?.rag||null; }
+function deepseekConfigured() { return !!state.config?.provider_configured; }
 function isIndexing(id=state.libraryId) { return state.reindexing.has(id); }
 function modelSummary() {
   const rag=ragState();
@@ -69,7 +70,7 @@ function modelSummary() {
   if(state.configError)return {label:'模型状态未知',text:'无法读取最新模型状态。打开状态面板查看原因并重试。',kind:'warning'};
   if(!rag)return {label:'模型状态待读取',text:'尚未取得模型运行状态；配置存在不代表服务已连通。',kind:'pending'};
   if(rag.provider==='local')return {label:'仅原文摘录',text:'当前使用原文摘录模式，不调用生成模型，也不提供生成式回答。',kind:'neutral'};
-  if(rag.provider==='deepseek'&&!rag.configured)return {label:'DeepSeek 待配置',text:'DeepSeek 配置尚未完成。请在本机 .env 填写 DEEPSEEK_API_KEY，保存并重启后检查模型连接；当前未确认 AI 生成可用。',kind:'warning'};
+  if(rag.provider==='deepseek'&&!rag.configured)return deepseekConfigured()?{label:'模型配置未完成',text:'生成服务已配置，向量服务配置尚未完整。可以先选择问答模型，完整问答仍需配置并检查向量服务。',kind:'warning'}:{label:'DeepSeek 待配置',text:'DeepSeek 配置尚未完成。请在本机 .env 填写 DEEPSEEK_API_KEY，保存并重启后检查模型连接；当前未确认 AI 生成可用。',kind:'warning'};
   if(!rag.configured)return {label:'模型未配置',text:'模型配置不完整；仅能展示检索原文。配置模型后请检查连接。',kind:'warning'};
   if(!rag.checked)return {label:'模型待检查',text:'模型已配置，尚未验证连通性。可先检查生成模型和向量模型。',kind:'pending'};
   if(rag.connected&&rag.chat_ready&&rag.embedding_ready)return {label:'模型检查通过',text:'生成模型与向量模型检查通过。实际回答模式及检索方式会逐条标明。',kind:'ready'};
@@ -101,9 +102,9 @@ function renderIndexStatus() {
   $('index-refresh').disabled=!state.libraryId||state.libraryLoading||state.indexRefreshing||isIndexing();$('index-refresh').textContent=state.indexRefreshing?'读取中':'刷新';
 }
 async function refreshModelConfig({silent=false}={}) {
-  const request=++state.modelRequest;
-  try{const config=await api('/api/config');if(request!==state.modelRequest)return;state.config=config;state.configError='';renderModelStatus();}
-  catch(error){if(request!==state.modelRequest)return;state.configError=error.message;renderModelStatus();if(!silent)toast(error.message,'error');}
+  const user=state.user;const request=++state.modelRequest;
+  try{const config=await api('/api/config');if(state.user!==user||request!==state.modelRequest)return;state.config=config;state.configError='';renderModelStatus();}
+  catch(error){if(state.user!==user||request!==state.modelRequest)return;state.configError=error.message;renderModelStatus();if(!silent)toast(error.message,'error');}
 }
 function locationText(chunk) { const parts=[]; if(chunk.page)parts.push(`第 ${chunk.page} 页`); if(chunk.start_line)parts.push(chunk.end_line && chunk.end_line!==chunk.start_line?`第 ${chunk.start_line}–${chunk.end_line} 行`:`第 ${chunk.start_line} 行`); if(!parts.length && chunk.ordinal!==undefined)parts.push(`片段 ${chunk.ordinal}`); return parts.join(' · ')||'原文片段'; }
 function downloadUrl(id) { return `/api/documents/${encodeURIComponent(id)}/download`; }
@@ -114,6 +115,7 @@ function toast(message,type='success') {
   setTimeout(()=>node.remove(),type==='error'?8500:5000);
 }
 async function api(path,options={}) {
+  const requestUser=state.user;
   const init={credentials:'same-origin',...options,headers:{...options.headers}};
   if(init.body && !(init.body instanceof FormData)){init.headers['Content-Type']='application/json';init.body=JSON.stringify(init.body);}
   let response;
@@ -122,13 +124,13 @@ async function api(path,options={}) {
   if(!response.ok){
     const details=Array.isArray(data.errors)?data.errors.map(item=>`${item.name}：${item.error}`).join('；'):'';
     const error=new Error(typeof data.error==='string'?data.error:(data.error?.message || data.message || details || `请求失败（${response.status}）`));error.status=response.status;
-    if(response.status===401 && state.user){showAuth();toast('登录已失效，请重新登录。','error');}
+    if(response.status===401 && requestUser && state.user===requestUser){showAuth();toast('登录已失效，请重新登录。','error');}
     throw error;
   }
   return data;
 }
 function setAuthBusy(busy) {$('auth-submit').disabled=busy;$('auth-toggle').disabled=busy;state.authBusy=busy;}
-function showAuth(){if(state.oauthPopup&&!state.oauthPopup.closed)state.oauthPopup.close();state.oauthPopup=null;state.user=null;state.nav++;state.previewRequest++;state.modelRequest++;state.chatgptRequest++;state.config=null;state.configError='';state.modelChecking=false;state.modelLoading=false;state.chatgpt=null;state.chatgptError='';state.chatgptLoading=false;state.chatgptBusy=false;state.chatgptConfirm=false;state.chatgptFlowMessage='';state.modalView=null;state.libraryLoading=false;state.sessionLoading=false;state.libraryId=null;state.sessionId=null;state.libraries=[];state.documents=[];state.sessions=[];state.messages=[];state.citations=[];state.pending.clear();$('app').hidden=true;$('auth-screen').hidden=false;$('loading-screen').hidden=true;closeMobilePanels();if($('modal').open)$('modal').close();if($('preview-modal').open)$('preview-modal').close();}
+function showAuth(){if(state.oauthPopup&&!state.oauthPopup.closed)state.oauthPopup.close();state.oauthPopup=null;state.user=null;state.nav++;state.previewRequest++;state.modelRequest++;state.chatgptRequest++;state.deepseekRequest++;state.deepseekModels=null;state.deepseekDraft='';state.deepseekError='';state.deepseekNotice='';state.deepseekLoading=false;state.deepseekSaving=false;state.config=null;state.configError='';state.modelChecking=false;state.modelLoading=false;state.chatgpt=null;state.chatgptError='';state.chatgptLoading=false;state.chatgptBusy=false;state.chatgptConfirm=false;state.chatgptFlowMessage='';state.modalView=null;state.libraryLoading=false;state.sessionLoading=false;state.libraryId=null;state.sessionId=null;state.libraries=[];state.documents=[];state.sessions=[];state.messages=[];state.citations=[];state.pending.clear();$('app').hidden=true;$('auth-screen').hidden=false;$('loading-screen').hidden=true;closeMobilePanels();if($('modal').open)$('modal').close();if($('preview-modal').open)$('preview-modal').close();}
 function updateAuthForm(){
   $('auth-title').textContent=state.register?'创建你的知识空间':'欢迎回来';
   $('auth-description').textContent=state.register?'从第一份资料开始，让知识随时可用。':'登录知微，继续连接你的知识。';
@@ -215,6 +217,7 @@ function renderMessage(message){
   if(message.role==='user')avatar.textContent=state.user?.username.slice(0,1).toUpperCase()||'我';else avatar.append(icon('sparkles'));
   const main=el('div','message-main');const heading=el('div','message-heading');heading.append(el('strong','',message.role==='user'?'你':'知微'));if(message.role!=='user'){const mode=el('span','message-mode',modeText(message.mode));mode.dataset.mode=message.mode||'unknown';heading.append(mode);const retrievalLabel=({dense:'语义向量检索',lexical:'词法检索',overview:'文档概览'})[message.retrieval_mode];if(retrievalLabel)heading.append(el('span','retrieval-mode',retrievalLabel));}
   const content=el('div','message-content');const citations=Array.isArray(message.citations)?message.citations:[];appendCitedText(content,message.content||'',citations);main.append(heading);
+  if(message.role!=='user'&&message.mode==='llm'&&typeof message.generation_model==='string'&&message.generation_model.trim())heading.append(el('span','generation-model',`模型：${message.generation_model}`));
   if(message.mode==='extractive-fallback')main.append(el('p','message-notice',message.notice||'本次生成未成功，以下展示可用原文摘录，不是 AI 生成的回答。'));
   else if(message.notice)main.append(el('p','message-notice',message.notice));
   main.append(content);
@@ -230,9 +233,9 @@ function appendCitedText(target,text,citations){
 async function copyText(text){try{await navigator.clipboard.writeText(text);toast('回答已复制。');}catch{toast('浏览器未允许复制，请选中回答文字后复制。','error');}}
 function scrollBottom(){requestAnimationFrame(()=>{$('chat-scroll').scrollTop=$('chat-scroll').scrollHeight;});}
 function resizeComposer(){const input=$('question');input.style.height='auto';input.style.height=`${Math.min(input.scrollHeight,150)}px`;updateComposer();}
-function updateComposer(){const busy=state.creatingSession||state.pending.has(state.sessionId);const unavailable=!state.libraryId||state.libraryLoading||state.sessionLoading||isIndexing();$('send-button').disabled=unavailable||!$('question').value.trim()||busy;$('question').disabled=unavailable;$('question').placeholder=state.sessionId?'继续追问当前对话中的内容…':'向你的知识库提问…';$('send-button').replaceChildren(busy?spinner():icon('arrow-up'));$('send-button').setAttribute('aria-label',busy?'正在处理问题':'发送问题');$('composer-hint').textContent=isIndexing()?'正在重建当前知识库的向量索引，完成后即可提问。':state.sessionId?'近期会话会用于理解追问；新建对话会开始新的上下文。请核对引用原文。':'每条结果都会标明是否由 AI 生成。请结合引用原文核实重要信息。';}
+function updateComposer(){const busy=state.creatingSession||state.pending.has(state.sessionId);const unavailable=!state.libraryId||state.libraryLoading||state.sessionLoading||isIndexing()||state.deepseekSaving;$('send-button').disabled=unavailable||!$('question').value.trim()||busy;$('question').disabled=unavailable;$('question').placeholder=state.sessionId?'继续追问当前对话中的内容…':'向你的知识库提问…';$('send-button').replaceChildren(busy?spinner():icon('arrow-up'));$('send-button').setAttribute('aria-label',busy?'正在处理问题':'发送问题');$('composer-hint').textContent=isIndexing()?'正在重建当前知识库的向量索引，完成后即可提问。':state.sessionId?'近期会话会用于理解追问；新建对话会开始新的上下文。请核对引用原文。':'每条结果都会标明是否由 AI 生成。请结合引用原文核实重要信息。';renderModelDialog();}
 async function sendQuestion(event){
-  event.preventDefault();const question=$('question').value.trim();if(!question||!state.libraryId||state.libraryLoading||state.sessionLoading||isIndexing()||state.creatingSession||state.pending.has(state.sessionId))return;
+  event.preventDefault();const question=$('question').value.trim();if(!question||!state.libraryId||state.libraryLoading||state.sessionLoading||isIndexing()||state.deepseekSaving||state.creatingSession||state.pending.has(state.sessionId))return;
   const libraryId=state.libraryId;const token=state.nav;let sessionId=state.sessionId;const userId=state.user.id;const tempId=`pending-${Date.now()}`;
   $('question').value='';resizeComposer();
   try{
@@ -319,8 +322,10 @@ function deleteSession(session){
 }
 async function showMode(){
   modal('模型与检索状态');state.modalView='models';renderModelDialog();
-  if(state.modelChecking||state.modelLoading)return;
-  state.modelLoading=true;renderModelDialog();await refreshModelConfig({silent:true});if(ragState()?.provider==='chatgpt')await refreshChatgptStatus();state.modelLoading=false;renderModelDialog();
+  if(state.modelChecking||state.modelLoading||state.deepseekSaving||state.deepseekLoading)return;
+  const user=state.user;state.modelLoading=true;renderModelDialog();
+  try{await refreshModelConfig({silent:true});if(state.user!==user)return;if(ragState()?.provider==='chatgpt')await refreshChatgptStatus();if(ragState()?.provider==='deepseek'&&deepseekConfigured())await refreshDeepseekModels();}
+  finally{if(state.user===user){state.modelLoading=false;renderModelDialog();}}
 }
 function renderModelDialog(){
   if(!$('modal').open||state.modalView!=='models')return;
@@ -332,13 +337,57 @@ function renderModelDialog(){
   for(const [key,value] of [['服务方式',provider],['生成模型',rag?.chat_model||'未配置'],['生成模型检查',readiness(rag?.chat_ready)],['向量服务',embeddingProvider],['向量模型',rag?.embedding_model||'未配置'],['向量模型检查',readiness(rag?.embedding_ready)]]){const row=el('div','info-row');row.append(el('span','',key),el('strong','',value));body.append(row);}
   if(state.configError){const error=el('p','modal-error',state.configError);error.setAttribute('role','alert');body.append(error);}
   else if(rag?.message)body.append(el('div','model-check-detail',rag.message));
-  if(rag?.provider==='deepseek')renderDeepseekSetup(body);
+  if(rag?.provider==='deepseek'){renderDeepseekModels(body);if(!deepseekConfigured())renderDeepseekSetup(body);}
   if(rag?.provider==='chatgpt')renderChatgptControls(body);
   body.append(el('div','modal-note','连接检查用于验证服务和模型是否可访问；实际向量生成与回答结果会在文档、消息中分别标明。无模型或生成失败时的原文摘录不等同于 AI 生成。'));
   body.append(el('p','model-configuration-help',modelDataUseText()));
   if(rag?.provider!=='deepseek')body.append(el('p','model-configuration-help','模型配置见项目 README 与 .env.example，修改后重启服务。密钥不在本页面填写。'));
-  const actions=el('div','modal-actions');const refresh=button('刷新状态',async()=>{if(state.modelLoading||state.modelChecking)return;state.modelLoading=true;renderModelDialog();await refreshModelConfig({silent:true});if(ragState()?.provider==='chatgpt')await refreshChatgptStatus();state.modelLoading=false;renderModelDialog();});refresh.disabled=state.modelLoading||state.modelChecking||state.chatgptBusy;
-  const check=button(state.modelChecking?'正在检查…':rag?.checked?'重新检查模型':'检查模型连接',checkModels,'button primary');check.disabled=state.modelLoading||state.modelChecking||state.chatgptBusy||!state.user;if(state.modelChecking)check.prepend(spinner());actions.append(refresh,check);body.append(actions);
+  const actions=el('div','modal-actions');const refresh=button('刷新状态',async()=>{if(state.modelLoading||state.modelChecking||state.deepseekLoading||state.deepseekSaving)return;const user=state.user;state.modelLoading=true;renderModelDialog();try{await refreshModelConfig({silent:true});if(state.user===user&&ragState()?.provider==='chatgpt')await refreshChatgptStatus();}finally{if(state.user===user){state.modelLoading=false;renderModelDialog();}}});refresh.disabled=state.modelLoading||state.modelChecking||state.chatgptBusy||state.deepseekLoading||state.deepseekSaving;
+  const check=button(state.modelChecking?'正在检查…':rag?.checked?'重新检查模型':'检查模型连接',checkModels,'button primary');check.disabled=state.modelLoading||state.modelChecking||state.chatgptBusy||state.deepseekLoading||state.deepseekSaving||!state.user;if(state.modelChecking)check.prepend(spinner());actions.append(refresh,check);body.append(actions);
+}
+function deepseekSelectionBusy(){return state.creatingSession||state.pending.size>0;}
+function renderDeepseekModels(body){
+  const area=el('section','deepseek-model-controls');area.setAttribute('aria-label','DeepSeek 问答模型');
+  const rag=ragState(),models=state.deepseekModels||[],current=rag?.chat_model||'',configured=deepseekConfigured();
+  const locked=!state.user||!configured||state.modelChecking||state.modelLoading||state.deepseekLoading||state.deepseekSaving||deepseekSelectionBusy();
+  const label=el('label','','问答模型');label.htmlFor='deepseek-model';const select=el('select','field-input');select.id='deepseek-model';select.setAttribute('aria-describedby','deepseek-model-status');
+  const placeholder=el('option','',state.deepseekLoading?'正在读取模型列表…':models.length?'请选择模型':'暂无可选模型');placeholder.value='';placeholder.disabled=true;select.append(placeholder);
+  for(const model of models){const name=model.display_name&&model.display_name!==model.id?`${model.display_name} (${model.id})`:model.id;const option=el('option','',name+(model.id==='deepseek-flash'?' · 默认 · 低费用':''));option.value=model.id;select.append(option);}
+  if(current&&!models.some(model=>model.id===current)){const option=el('option','',`${current}（当前，未在列表）`);option.value=current;option.disabled=true;select.append(option);}
+  select.value=models.some(model=>model.id===state.deepseekDraft)?state.deepseekDraft:current;select.disabled=locked||!models.length||!!state.deepseekError;
+  select.addEventListener('change',()=>{state.deepseekDraft=select.value;state.deepseekNotice='';renderModelDialog();$('deepseek-model')?.focus();});area.append(label,select);
+  let status=!configured?'配置 API Key 后才能读取官方模型列表；本页面不接收密钥。':state.deepseekSaving?'正在保存模型选择…':state.deepseekLoading?'正在从 DeepSeek 读取可用模型…':state.deepseekError?state.deepseekError:state.deepseekNotice?state.deepseekNotice:state.deepseekModels===null?'尚未读取模型列表。':!models.length?'官方返回的模型列表为空，请稍后刷新。当前选择保持不变。':current&&!models.some(model=>model.id===current)?`当前模型 ${current} 未出现在本次列表中，可刷新列表或选择其他模型。`:'模型列表来自 DeepSeek；选择后仍需检查模型连接。';
+  if(deepseekSelectionBusy())status='当前有回答正在生成，请完成后切换模型。';
+  const note=el('p',state.deepseekError?'deepseek-model-status error':'deepseek-model-status',status);note.id='deepseek-model-status';note.setAttribute('role',state.deepseekError?'alert':'status');area.append(note);
+  const actions=el('div','deepseek-model-actions');const refresh=button(state.deepseekLoading?'读取中…':'刷新模型列表',refreshDeepseekModels);refresh.id='deepseek-model-refresh';refresh.disabled=!state.user||!configured||state.modelChecking||state.modelLoading||state.deepseekLoading||state.deepseekSaving;
+  const apply=button(state.deepseekSaving?'保存中…':'使用此模型',selectDeepseekModel,'button primary');apply.id='deepseek-model-apply';apply.disabled=locked||!!state.deepseekError||!models.some(model=>model.id===state.deepseekDraft)||state.deepseekDraft===current;actions.append(refresh,apply);area.append(actions);
+  area.append(el('p','deepseek-model-note','切换仅影响后续回答，资料无需重新上传；选择会保存在当前知微账户。'));body.append(area);
+}
+async function refreshDeepseekModels(){
+  if(!state.user||ragState()?.provider!=='deepseek'||!deepseekConfigured()||state.deepseekLoading||state.deepseekSaving||state.modelChecking)return;
+  const user=state.user,request=++state.deepseekRequest,previousCurrent=ragState().chat_model,previousDraft=state.deepseekDraft;
+  const current=()=>state.user===user&&request===state.deepseekRequest&&ragState()?.provider==='deepseek';
+  state.deepseekLoading=true;state.deepseekError='';state.deepseekNotice='';renderModelDialog();
+  try{const data=await api('/api/deepseek/models');if(!current())return;const seen=new Set();state.deepseekModels=(Array.isArray(data.models)?data.models:[]).filter(model=>typeof model.id==='string'&&model.id.trim()&&!seen.has(model.id)&&seen.add(model.id)).map(model=>({id:model.id,display_name:typeof model.display_name==='string'?model.display_name:model.id}));
+    if(typeof data.selected_model==='string'&&data.selected_model!==ragState().chat_model){await refreshModelConfig({silent:true});if(!current())return;}
+    state.deepseekDraft=previousDraft&&previousDraft!==previousCurrent&&state.deepseekModels.some(model=>model.id===previousDraft)?previousDraft:ragState().chat_model||'';
+  }catch(error){if(current())state.deepseekError=`模型列表读取失败：${error.message} 当前使用的模型保持不变。`;}
+  finally{if(current()){state.deepseekLoading=false;renderModelDialog();}}
+}
+async function selectDeepseekModel(){
+  const model=state.deepseekDraft;
+  if(!state.user||ragState()?.provider!=='deepseek'||!deepseekConfigured()||state.deepseekSaving||state.deepseekLoading||state.modelChecking||state.modelLoading||deepseekSelectionBusy()||state.deepseekError||model===ragState()?.chat_model||!state.deepseekModels?.some(item=>item.id===model))return;
+  const user=state.user,request=++state.deepseekRequest,configRequest=++state.modelRequest;const current=()=>state.user===user&&request===state.deepseekRequest;
+  state.deepseekSaving=true;state.deepseekError='';state.deepseekNotice='';updateComposer();
+  try{const config=await api('/api/deepseek/model',{method:'POST',body:{model}});if(!current()||configRequest!==state.modelRequest)return;state.config=config;state.configError='';state.deepseekDraft=config.rag?.chat_model||model;state.deepseekNotice=`已保存 ${state.deepseekDraft}。请点击“检查模型连接”验证可用性。`;renderModelStatus();}
+  catch(error){
+    if(!current())return;
+    await refreshModelConfig({silent:true});if(!current())return;
+    if(state.configError){state.deepseekError=`未能确认切换结果：${error.message} 请刷新状态后确认。`;}
+    else{state.deepseekDraft=ragState()?.chat_model||'';if(state.deepseekDraft===model){state.deepseekError='';state.deepseekNotice=`已确认当前模型为 ${state.deepseekDraft}，但保存响应未完整收到。请检查模型连接。`;}
+      else state.deepseekError=`切换未完成确认：${error.message} 当前读取到的模型为 ${state.deepseekDraft||'未配置'}，可刷新模型列表后重试。`;}
+  }
+  finally{if(current()){state.deepseekSaving=false;updateComposer();}}
 }
 function modelDataUseText(){
   const rag=ragState();
@@ -354,14 +403,14 @@ function renderDeepseekSetup(body){
   const steps=el('ol');
   for(const text of ['在 DeepSeek 官方平台申请 API Key。','在本机项目的 .env 中填写 DEEPSEEK_API_KEY；此页面不收集密钥。','保存后重启服务，再点击“检查模型连接”。'])steps.append(el('li','',text));
   const link=el('a','provider-key-link','前往 DeepSeek 官方平台申请 API Key');link.href='https://platform.deepseek.com/api_keys';link.target='_blank';link.rel='noopener noreferrer';
-  section.append(steps,link,el('p','provider-setup-note','默认地址 DEEPSEEK_BASE_URL=https://api.deepseek.com，默认模型 DEEPSEEK_MODEL=deepseek-flash。默认向量方案使用本机 Ollama。更多配置见 README 与 .env.example；请勿提交密钥到仓库。'));
+  section.append(steps,link,el('p','provider-setup-note','默认地址 DEEPSEEK_BASE_URL=https://api.deepseek.com，向量方案使用本机 Ollama。连接后可在本面板选择当前账户的问答模型；更多配置见 README 与 .env.example。请勿提交密钥到仓库。'));
   body.append(section);
 }
 async function checkModels(){
-  if(state.modelChecking||state.modelLoading||state.chatgptBusy||!state.user)return;const userId=state.user.id;const request=++state.modelRequest;state.modelChecking=true;state.configError='';renderModelStatus();renderModelDialog();
-  try{const data=await api('/api/models/check',{method:'POST',body:{}});if(state.user?.id!==userId||request!==state.modelRequest)return;state.config=data;state.configError='';const rag=data.rag;toast(rag?.checked&&rag?.connected&&rag?.chat_ready&&rag?.embedding_ready?'服务与模型检查通过。每次索引与回答的实际结果会单独标明。':rag?.message||'模型检查未通过，请查看状态说明。',rag?.checked&&rag?.connected&&rag?.chat_ready&&rag?.embedding_ready?'success':'error');if(rag?.provider==='chatgpt')await refreshChatgptStatus();}
-  catch(error){if(state.user?.id===userId&&request===state.modelRequest){state.configError=error.message;toast(error.message,'error');}}
-  finally{if(state.user?.id===userId){state.modelChecking=false;renderModelStatus();renderModelDialog();}}
+  if(state.modelChecking||state.modelLoading||state.chatgptBusy||state.deepseekLoading||state.deepseekSaving||!state.user)return;const user=state.user;const request=++state.modelRequest;state.modelChecking=true;state.configError='';renderModelStatus();renderModelDialog();
+  try{const data=await api('/api/models/check',{method:'POST',body:{}});if(state.user!==user||request!==state.modelRequest)return;state.config=data;state.configError='';const rag=data.rag;toast(rag?.checked&&rag?.connected&&rag?.chat_ready&&rag?.embedding_ready?'服务与模型检查通过。每次索引与回答的实际结果会单独标明。':rag?.message||'模型检查未通过，请查看状态说明。',rag?.checked&&rag?.connected&&rag?.chat_ready&&rag?.embedding_ready?'success':'error');if(rag?.provider==='chatgpt')await refreshChatgptStatus();}
+  catch(error){if(state.user===user&&request===state.modelRequest){state.configError=error.message;toast(error.message,'error');}}
+  finally{if(state.user===user&&request===state.modelRequest){state.modelChecking=false;renderModelStatus();renderModelDialog();}}
 }
 function renderChatgptControls(body){
   const area=el('section','chatgpt-controls');area.setAttribute('aria-label','ChatGPT 会员连接');const status=state.chatgpt;const locked=state.chatgptBusy||state.chatgptLoading||state.modelLoading||state.modelChecking;

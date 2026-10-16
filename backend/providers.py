@@ -117,6 +117,32 @@ def _request_json(base, path, payload=None, key="", timeout=180):
         raise ProviderError("无法连接模型服务或请求超时，请启动服务并确认所需模型已安装。") from None
 
 
+def list_deepseek_models(config):
+    """Read the live catalog; IDs, not labels, are used in chat requests."""
+    if provider_name(config) != "deepseek":
+        raise ProviderError("当前未使用 DeepSeek 服务。")
+    data = settings(config)
+    if not data["key"]:
+        raise ProviderError("DeepSeek API Key 尚未配置，请填写 DEEPSEEK_API_KEY 后重启。")
+    response = _request_json(data["base"], "/models", key=data["key"], timeout=config.get("CHECK_TIMEOUT", 8))
+    rows = response.get("data")
+    if not isinstance(rows, list) or len(rows) > 1000:
+        raise ProviderError("DeepSeek 模型列表格式无效。")
+    models, seen = [], set()
+    for row in rows:
+        identifier = row.get("id") if isinstance(row, dict) else None
+        if not isinstance(identifier, str) or not 1 <= len(identifier) <= 200 or any(character.isspace() or ord(character) < 32 for character in identifier):
+            raise ProviderError("DeepSeek 模型列表格式无效。")
+        label = row.get("name")
+        label = label.strip() if isinstance(label, str) else ""
+        if not label or len(label) > 200 or any(ord(character) < 32 for character in label):
+            label = identifier
+        if identifier not in seen:
+            models.append({"id": identifier, "display_name": label})
+            seen.add(identifier)
+    return models
+
+
 def normalize_vectors(vectors, expected_count=None):
     if not isinstance(vectors, list) or not vectors or (expected_count is not None and len(vectors) != expected_count):
         raise ProviderError("嵌入服务返回的向量数量不匹配。")

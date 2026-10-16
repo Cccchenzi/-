@@ -8,7 +8,7 @@
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-`tests/` 覆盖业务、语义索引、结构化引文、故障、数据隔离、DeepSeek适配和可选会员授权边界。本轮98/98通过，其中新增12项覆盖概览目标、具体问题与追问路由、空白映射、故障历史和库/用户隔离。使用临时数据和模拟远端服务，不需要真实会员或API Key；后续通过数量以实际输出为准，不能视为DeepSeek真实接通或问答准确率。
+`tests/` 覆盖业务、语义索引、结构化引文、故障、数据隔离、DeepSeek适配和可选会员授权边界。本轮108/108通过，包含12项概览/引文回归和10项模型选择回归；后者覆盖目录校验、账户隔离、重启持久化、检查缓存失效，以及追问改写期间切换模型仍使用同一请求快照。使用临时数据和模拟远端服务，不需要真实会员或API Key；后续通过数量以实际输出为准，不能视为DeepSeek真实接通或问答准确率。
 
 ## 精确边界：check_boundaries.py
 
@@ -38,6 +38,8 @@
 
 该脚本使用应用测试客户端，但实际请求选定的生成和嵌入模型。它读取项目 `.env` 或环境变量中的配置，在临时数据库创建合成资料；不读取、修改或删除正常应用的数据目录。运行前须自行安装、启动或配置对应服务。
 
+网页模型选择按正式知微账户保存；本脚本创建临时账户，不读取正式账户的已选模型。需要复验某个模型时，使用 `--chat-model <模型ID>` 明确指定；未指定时使用部署默认配置，项目默认是费用较低的 `deepseek-flash`。模型ID应先从网页刷新目录确认，检查结果只适用于本次使用的模型。
+
 ```powershell
 # 默认DeepSeek：先在本地.env填DEEPSEEK_API_KEY，嵌入保持EMBEDDING_PROVIDER=ollama
 .\.venv\Scripts\python.exe tools/check_real_rag.py --provider deepseek
@@ -66,6 +68,16 @@ node tools/check_chat_layout.cjs --output "$env:TEMP\zhiwei-layout-check"
 ```
 
 需要 Node.js、Playwright 和本机 Edge；可通过 `PLAYWRIGHT_MODULE` 指向现有 Playwright 模块，或用 `EDGE_EXECUTABLE` 指定 Edge。默认结果写入临时目录，`--output` 可指定截图和JSON位置。该检查不读取用户资料、不请求模型，也不是完整浏览器端真实问答验收；与后端回归、真实模型和容量边界分别记录。
+
+## 模型选择界面检查
+
+`check_model_selector.cjs` 用实际无头 Edge 加载前端，所有API由浏览器中的合成响应提供，外部请求被阻止。本轮20/20通过并保存3张截图。覆盖默认 Flash 不自动切换、目录刷新/空列表/故障、显式应用、保存响应丢失后的状态确认、历史模型标签，以及登出重登期间的过时目录、保存和401响应；也检查390px窄屏和生成已配置但向量配置未完成的状态。此脚本不访问真实账户或模型，不能替代真实API验收。
+
+```powershell
+node tools/check_model_selector.cjs --output "$env:TEMP\zhiwei-model-selector-check"
+```
+
+依赖和环境变量与长会话检查相同；默认报告和截图写入系统临时目录。实际通过数量以该次 `summary.json` 为准，不能与真实模型选择10项或后端回归合并成准确率。
 
 ## 本机运行时：local_runtime.py
 

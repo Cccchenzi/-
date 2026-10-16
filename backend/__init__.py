@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
     password_hash TEXT NOT NULL, created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS user_model_settings (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    deepseek_model TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS libraries (
     id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
@@ -231,6 +236,34 @@ def create_app(test_config: dict | None = None) -> Flask:
             raise ApiError("请发送有效的 JSON 对象。")
         return data
 
+    def request_config(refresh=False):
+        """Freeze one user's model choice for the entire request's AI work.
+
+        Never mutate app.config to apply a user's preference: concurrent users
+        and model switches must not alter an in-flight rewrite or generation.
+        """
+        if not refresh and "model_config" in g:
+            return g.model_config
+        config = dict(app.config)
+        provider = providers.provider_name(config)
+        user_id = g.user["id"] if g.user else None
+        if provider == "deepseek":
+            row = database().execute("SELECT deepseek_model,revision FROM user_model_settings WHERE user_id=?", (user_id,)).fetchone() if user_id else None
+            if row:
+                config["DEEPSEEK_MODEL"] = row["deepseek_model"]
+            config["_SELECTION_REVISION"] = row["revision"] if row else 0
+            previous = app.extensions["model_checks_by_user"].get(user_id, {})
+            # Revision also handles A -> B -> A while an old check for A is in
+            # flight. Matching the model string alone would revive stale state.
+            config["_MODEL_STATUS"] = dict(previous) if previous.get("selection_revision") == config["_SELECTION_REVISION"] else {}
+        elif provider == "chatgpt":
+            config["_MODEL_STATUS"] = dict(app.extensions["model_checks_by_user"].get(user_id, {}))
+        store = config.get("VECTOR_STORE")
+        if type(store) is DenseVectorStore and store.config is app.config:
+            config["VECTOR_STORE"] = DenseVectorStore(config)
+        g.model_config = config
+        return config
+
     def text_field(data, name, maximum, default=""):
         value = data.get(name, default)
         if not isinstance(value, str):
@@ -361,33 +394,73 @@ def create_app(test_config: dict | None = None) -> Flask:
         data = public_config()
         return jsonify(status="ok", **data)
 
-    def public_config():
-        configured = providers.chat_configured(app.config)
-        status_config = app.config
-        if providers.provider_name(app.config) == "chatgpt":
-            # A membership/model check belongs to the signed-in app user. Never
-            # expose another user's cached account status through public config.
-            status_config = dict(app.config)
-            user_id = g.user["id"] if g.user else None
-            status_config["_MODEL_STATUS"] = app.extensions["model_checks_by_user"].get(user_id, {})
-        return {"mode": "llm" if configured else "extractive", "model": providers.settings(app.config)["chat_model"] if configured else None,
-                "embedding": "semantic" if providers.embedding_configured(app.config) else "local-tfidf", "provider_configured": configured,
+    def public_config(config=None):
+        config = request_config() if config is None else config
+        configured = providers.chat_configured(config)
+        return {"mode": "llm" if configured else "extractive", "model": providers.settings(config)["chat_model"] if configured else None,
+                "embedding": "semantic" if providers.embedding_configured(config) else "local-tfidf", "provider_configured": configured,
                 "max_file_size_mb": 20, "max_files_per_batch": 10, "supported_extensions": [".pdf", ".md", ".txt"],
-                "rag": providers.status_snapshot(status_config)}
+                "rag": providers.status_snapshot(config)}
 
     @app.get("/api/config")
     def config():
         return jsonify(public_config())
 
+    def deepseek_catalog(config):
+        origin = request.headers.get("Origin")
+        if origin and (urlsplit(origin).scheme, urlsplit(origin).netloc) != (request.scheme, request.host):
+            raise ApiError("请求来源不受信任，请在本地应用页面操作。", 403)
+        if providers.provider_name(config) != "deepseek":
+            raise ApiError("当前未使用 DeepSeek 服务。", 409)
+        if not providers.settings(config)["key"]:
+            raise ApiError("DeepSeek API Key 尚未配置，请在本地填写 DEEPSEEK_API_KEY 后重启。", 503)
+        try:
+            return providers.list_deepseek_models(config)
+        except Exception:
+            # Exception text may contain private upstream data. The catalog
+            # request must not leak it or erase a previously saved selection.
+            raise ApiError("无法读取 DeepSeek 模型列表，请检查 API Key、服务地址及网络后重试。", 502) from None
+
+    @app.get("/api/deepseek/models")
+    @authenticated
+    def deepseek_models():
+        config = request_config()
+        models = deepseek_catalog(config)
+        return jsonify(models=models, selected_model=providers.settings(config)["chat_model"])
+
+    @app.post("/api/deepseek/model")
+    @authenticated
+    def select_deepseek_model():
+        model = text_field(body(), "model", 200)
+        if not model:
+            raise ApiError("请选择模型。")
+        catalog = deepseek_catalog(request_config())
+        if model not in {item["id"] for item in catalog}:
+            raise ApiError("所选模型不在当前可用列表中，请刷新模型列表后重试。")
+        with database() as connection:
+            connection.execute("""INSERT INTO user_model_settings(user_id,deepseek_model,revision) VALUES(?,?,1)
+                ON CONFLICT(user_id) DO UPDATE SET deepseek_model=excluded.deepseek_model,
+                revision=user_model_settings.revision+1""", (g.user["id"], model))
+        app.extensions["model_checks_by_user"].pop(g.user["id"], None)
+        return jsonify(public_config(request_config(refresh=True)))
+
     @app.post("/api/models/check")
     @authenticated
     def check_models():
-        checked = providers.check_models(app.config)
-        if providers.provider_name(app.config) == "chatgpt":
+        config = request_config()
+        checked = providers.check_models(config)
+        if providers.provider_name(config) == "deepseek":
+            checked = dict(checked, selection_revision=config["_SELECTION_REVISION"])
+            latest = request_config(refresh=True)
+            if latest["_SELECTION_REVISION"] == config["_SELECTION_REVISION"]:
+                app.extensions["model_checks_by_user"][g.user["id"]] = checked
+        elif providers.provider_name(config) == "chatgpt":
             app.extensions["model_checks_by_user"][g.user["id"]] = checked
         else:
             app.config["_MODEL_STATUS"] = checked
-        return jsonify(public_config())
+        # A concurrent switch must not make the old check response display the
+        # previous model as selected or mark the new model as checked.
+        return jsonify(public_config(request_config(refresh=True)))
 
     @app.post("/api/libraries/<int:library_id>/reindex")
     @authenticated
@@ -576,8 +649,15 @@ def create_app(test_config: dict | None = None) -> Flask:
         history = [dict(row) for row in connection.execute("SELECT role,content FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 12", (session_id,)).fetchall()][::-1]
         chunks = [dict(row) for row in connection.execute("""SELECT c.*, d.name AS document_name FROM chunks c
             JOIN documents d ON c.document_id=d.id WHERE d.library_id=? ORDER BY c.id""", (chat_session["library_id"],))]
+        config = request_config()
+        requested_model = providers.settings(config)["chat_model"]
         metadata = {}
-        content, citations, mode, notice = answer_question(question, chunks, history, app.config, metadata=metadata)
+        content, citations, mode, notice = answer_question(question, chunks, history, config, metadata=metadata)
+        # DeepSeek uses this immutable per-request model selection. Membership
+        # providers resolve profiles dynamically and do not yet return an
+        # authoritative actual-model field, so do not invent one for them.
+        if mode == "llm" and providers.provider_name(config) == "deepseek":
+            metadata["generation_model"] = requested_model
         # The optional network call runs before beginning the write transaction.
         owned_session(session_id)
         with connection:
