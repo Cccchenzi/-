@@ -1,8 +1,8 @@
-"""Local sparse TF-IDF retrieval and the explicit vector-store extension point.
+"""Dense semantic retrieval, offline TF-IDF and a vector-store extension point.
 
-The bundled app uses LocalTfidfStore. A future Chroma adapter must implement
-VectorStore.search and return the same RankedChunk values; no Chroma service or
-embedding model is silently downloaded or claimed by this implementation.
+Model-enabled modes use DenseVectorStore; explicit local mode uses
+LocalTfidfStore. A future Chroma adapter must implement VectorStore.search and
+return the same RankedChunk values. No Chroma implementation is bundled.
 """
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from typing import Mapping, Protocol, Sequence
+
+from . import providers
 
 
 STOP_WORDS = {
@@ -116,3 +118,53 @@ class LocalTfidfStore:
             return []
         # Relative cutoff limits unrelated low-scoring tails in long libraries.
         return [item for item in ranked if item.score >= max(0.07, ranked[0].score * 0.35)][:limit]
+
+
+class DenseVectorStore:
+    """Persisted semantic embeddings with owner-scoped cosine search.
+
+    The caller supplies ONLY rows of the selected user's library. A Chroma
+    adapter can replace this object via VECTOR_STORE while retaining the same
+    contract and must enforce equivalent owner/library metadata filters.
+    """
+    def __init__(self, config):
+        self.config = config
+
+    def search(self, query: str, chunks: Sequence[Mapping], limit: int = 6) -> list[RankedChunk]:
+        if not chunks:
+            return []
+        fingerprint = providers.embedding_fingerprint(self.config)
+        ready = [chunk for chunk in chunks if chunk.get("embedding_status") == "ready"
+                 and chunk.get("embedding_fingerprint") == fingerprint]
+        if not ready:
+            raise providers.ProviderError("当前知识库没有可用的语义索引，请配置嵌入模型后重建索引。")
+        model = providers.embedding_settings(self.config)["model"].lower()
+        embedding_query = ("Instruct: Given a user question, retrieve relevant personal documents.\nQuery: " + query
+                           if "qwen3-embedding" in model else query)
+        query_vector = providers.normalize_vectors(providers.embed_texts([embedding_query], self.config), 1)[0]
+        ranked = []
+        invalid = 0
+        for chunk in ready:
+            try:
+                vector = providers.normalize_vectors([json.loads(chunk["embedding_json"])], 1)[0]
+                if len(vector) != len(query_vector):
+                    raise providers.ProviderError("嵌入维度已变化，请重建索引。")
+            except (providers.ProviderError, ValueError, TypeError, KeyError):
+                invalid += 1
+                continue
+            score = max(-1.0, min(1.0, sum(left * right for left, right in zip(query_vector, vector))))
+            if score >= float(self.config.get("MIN_EMBEDDING_SCORE", 0.2)):
+                ranked.append(RankedChunk(chunk, score))
+        if invalid == len(ready):
+            raise providers.ProviderError("已保存的语义向量无效或维度改变，请重建索引。")
+        ranked.sort(key=lambda result: result.score, reverse=True)
+        # A modest per-document cap leaves room for evidence across documents.
+        selected, per_document = [], Counter()
+        for match in ranked:
+            if per_document[match.chunk["document_id"]] >= 3:
+                continue
+            selected.append(match)
+            per_document[match.chunk["document_id"]] += 1
+            if len(selected) >= limit:
+                break
+        return selected

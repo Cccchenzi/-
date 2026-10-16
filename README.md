@@ -1,102 +1,79 @@
-# 知微 个人知识库问答助手
+# 知微 · 个人知识库问答助手
 
-学生项目场景池项目 02 的本地可运行工程。使用 Python Flask、SQLite 和原生 HTML/CSS/JavaScript，支持账户隔离、多个知识库、批量文档上传、检索问答、引用定位和对话历史。
+学生项目场景池项目 02：上传本人资料，自动分块和语义向量化，检索后生成带原文出处的回答，按知识库保存多轮会话。Python Flask + SQLite + 原生网页前端，无需前端构建。
 
-## 在 VS Code 中启动
+本次修订补齐上一版的核心缺口：**TF-IDF 关键词检索＋原文摘录只是降级模式，不能算完整 AI RAG。** 当前已实现真实嵌入、生成、向量持久化、多轮检索改写和逐条引文校验。模型实际接通情况以页面连接检查和真实验收记录为准。
 
-首次从 GitHub 下载后，安装 Python 3.11 或更高版本，执行 `setup.bat` 安装依赖，再打开本目录的 `zhiwei.code-workspace`。已经完成安装的电脑可直接执行以下任意一种方式：
+## 本机启动与首次安装
 
-1. 双击 `start.bat`，浏览器会打开 http://127.0.0.1:8765 。
-2. 在 VS Code 按 `Ctrl+Shift+B`，运行默认的“知微：启动应用”任务，无需扩展。
-3. 安装 VS Code 推荐的 Python / Python Debugger 扩展后按 `F5`，选择“启动知微（Python）”。
+已配置的电脑直接双击 `start.bat`，或在 VS Code 打开 `zhiwei.code-workspace` 后按 Ctrl+Shift+B。地址为 http://127.0.0.1:8765 。安装 Python / Python Debugger 扩展后也可按 F5。
 
-如果 VS Code 顶部显示“受限模式”，编辑器任务和调试可能被禁用；你可在审阅代码后自行决定是否信任该工作区。双击 `start.bat` 的启动方式不依赖 VS Code 任务系统。
+首次下载项目或换电脑：
 
-启动终端按 `Ctrl+C` 停止服务。若 8765 端口被占用，先关闭已有服务，或在终端使用：
+1. 安装 Python 3.11+，运行 `setup.bat` 安装依赖。
+2. 运行 `setup-ai.bat`。下载经过 SHA-256 核验的官方 Ollama 运行时及 `qwen3-embedding:0.6b` 向量模型，首次合计约 2.1GB；解压另需空间。运行时在 `.runtime/`，模型在 `data/ollama-models/`，不提交 Git。
+3. 运行 `start.bat`，创建或登录知微账户，在“模型与索引”中点 **Continue with ChatGPT**。在官方页面登录并授权，返回知微刷新模型并检查连接。
+4. 创建知识库，批量上传 PDF / Markdown / TXT。所有片段索引完成后提问；旧资料可点击“重建向量索引”。
 
-```powershell
-.\.venv\Scripts\python.exe run.py --port 8766 --open-browser
-```
+本项目通过官方 [Sign in with ChatGPT](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt) 连接会员。资格及模型以官方授权页面和账号模型列表为准，问答使用会员额度；没有读取 Codex 或其他应用的凭据。可在 [ChatGPT 用量设置](https://chatgpt.com/settings/usage) 管理额度及访问权。
 
-移动工程到其他路径或换电脑后，需要重新创建虚拟环境（Python 虚拟环境不能直接搬迁）。安装 Python 3.11 或更高版本，再执行 `setup.bat`。首次安装依赖需要联网，后续本地检索无需联网。前端无需 npm、Node.js 或额外构建。
+本地向量化不发送资料给外部服务；使用 ChatGPT 问答时，**当前问题、检索片段及必要历史会发送给 OpenAI**。Windows 授权凭据由 DPAPI 加密，按知微账户隔离，不发送到网页、不提交仓库。换 Windows 账户或电脑需重新授权。
 
-## 第一次使用
+## 五项项目要求
 
-打开页面后点击“创建账户”，设置用户名和至少 8 位密码。创建一个知识库，然后上传自己的 PDF、Markdown（`.md`）或 TXT。也可以点“导入示例”，导入三份教学样例。示例中的项目和评估计划为演示内容。
+| 需求 | 当前实现 | 核对方法 |
+| --- | --- | --- |
+| PDF / MD / TXT 批量上传 | 每批最多 10 份、每份 20MiB；逐文件反馈；同库去重 | 同时上传三种格式，查看片段数和错误提示 |
+| 切片向量化、Chroma 升级点 | 约 750 字符分块、120 重叠；稠密嵌入保存 SQLite；模型指纹防止混用；预留 VectorStore | 文件显示索引完成，重启仍可检索；Chroma 本身不是必装组件 |
+| 本人文档 AI 问答、多轮 | 当前账户/库内语义检索；模型理解追问并生成结构化结论 | 用同义表达、跨文档问题和指代追问测试；实际模式必须为 AI 生成 |
+| 引用溯源 | 每条生成结论绑定片段；引文必须逐字存在；可查文件、页/行和原文 | 非法引文拒绝展示生成答案 |
+| 按知识库保存历史 | SQLite 保存会话、消息、引用及实际检索/生成模式 | 切换库、打开历史、重启应用 |
 
-可提问“青竹-27 的里程碑日期是什么？”，再追问“它的核心闭环包含哪些步骤？”。点击回答中的 `[1]` 或右侧引用卡片，核对文件名、页码或行号和原文。切换历史会话或刷新页面，资料与会话仍保存。
+资料不足时拒答；服务失败或引文无效时明确降级为原文摘录。**逐字引文校验不能证明概括一定正确，更不能保证零幻觉**，仍需核对结论是否被原文支持。扫描 PDF 需先 OCR，DOCX 不属于上传格式。
 
-## 已实现功能
+## 模型配置
 
-| 项目要求 | 实现 |
-| --- | --- |
-| 批量 PDF / Markdown / TXT | 每批最多 10 份、单份最多 20 MB；逐文件显示成功或失败；同库内容去重 |
-| 分块与向量化 | 约 750 字符分块、120 字符重叠；持久化稀疏词频向量，检索时计算 TF-IDF 与余弦相似度 |
-| 基于本人文档问答 | 所有接口校验账号所有权；检索限当前知识库；追问利用同会话上下文 |
-| 引用溯源 | 返回实际原文片段、文件和位置；可预览片段、下载原文件 |
-| 会话历史 | 每个知识库保存独立会话；SQLite 持久化；支持删除 |
-| Chroma 升级点 | `backend/vector_store.py` 的 `VectorStore` 协议和应用配置 `VECTOR_STORE` 注入接口 |
+配置保存在项目 `.env`；修改后重启。模板为 `.env.example`，密钥和令牌不要写入源代码。
 
-默认是**本地原文检索模式**：展示与问题相关的资料摘录，不伪装成大模型生成。TF-IDF 是词法向量检索，尚未接入语义嵌入模型或 Chroma。无相关资料时提示资料不足。扫描 PDF 需要先做 OCR；DOCX 不在本项目上传格式内。
-
-## 启用大模型生成回答
-
-复制 `.env.example` 为 `.env`，填写你已有的、支持 Chat Completions 接口的服务配置：
+推荐的会员＋本地向量方案：
 
 ```dotenv
-AI_API_KEY=填写你的密钥
-AI_BASE_URL=https://你的服务商地址/v1
-AI_MODEL=填写该服务商的模型名称
+RAG_PROVIDER=chatgpt
+EMBEDDING_PROVIDER=ollama
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_EMBED_MODEL=qwen3-embedding:0.6b
 ```
 
-重启后端后，界面显示 AI 模式。三个字段都需要有效值。服务端向基础地址下的 `/chat/completions` 发送请求；也接受完整的该端点地址。可连接支持此协议的本地服务，HTTP 地址仅允许 localhost / 127.0.0.1 / ::1；远端服务使用 HTTPS。
+完全本地：运行 `powershell -File setup-ai.ps1 -WithLocalChat`，把 RAG_PROVIDER 改为 ollama。问答使用 qwen3:4b，额外下载约 2.5GB，无需会员登录。
 
-启用后，检索片段、当前问题和必要历史上下文会发送给所配置的服务。密钥只在后端读取，不会传给前端，也已被 `.gitignore` 排除。模型超时、服务错误、没有引用或引用编号非法时，明确回退本地摘录。引用校验只能检查编号，无法保证每句生成内容都正确，仍应核对原文。
+兼容 API：设置 RAG_PROVIDER=openai、EMBEDDING_PROVIDER=openai，填写 AI_API_KEY、AI_BASE_URL、AI_MODEL 和 AI_EMBED_MODEL。不同嵌入服务可独立填写 AI_EMBED_BASE_URL / AI_EMBED_API_KEY。远端必须 HTTPS，本机允许 HTTP。会员登录与普通 API Key 是独立接入方式。
 
-本次没有你的模型服务凭据，因此外部真实模型调用尚未验收；相关异常和引用检查通过模拟服务测试。
+RAG_PROVIDER=local 明确选择离线词法摘录。没有模型配置的旧安装也保留此模式。看到“摘录”意味着本次没有完成 AI 生成。
 
-## 工程结构
-
-```text
-zhiwei/
-├── backend/              Flask API、解析分块、检索与模型调用
-├── frontend/             中文网页界面
-├── sample_docs/           三份可导入的教学样例
-├── tests/                28 项自动化集成测试
-├── docs/                 需求、架构、课堂演示与验收说明
-├── coursework/           正式需求报告、可点击低保真原型、答辩讲稿
-├── tools/                14 项独立边界检查及运行说明
-├── .vscode/              Python 解释器、运行任务、调试配置
-├── .env.example          可选模型配置示例
-├── run.py                仅监听本机的服务入口
-├── setup.bat             新电脑安装依赖
-├── start.bat             启动应用并打开浏览器
-└── data/                 自动生成的数据目录，不提交版本库
-```
-
-修改页面用 `frontend/`；修改接口用 `backend/__init__.py`；修改分块用 `backend/documents.py`；修改检索用 `backend/vector_store.py`；修改模型提示和降级策略用 `backend/rag.py`。后端改动后重启，前端改动后刷新。
-
-## 测试与课程材料
+## 验证
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe tools/check_boundaries.py
 ```
 
-28 项测试已通过，覆盖账号及知识库隔离、三类文件解析、上传异常、引用真实性、历史持久化、旧数据库迁移和模型降级。测试使用临时数据库，不会清空日常资料。
+回归测试使用合成数据和模拟远端服务，覆盖隔离、向量持久化、迁移、结构化引文、故障与授权边界，数量以当前输出为准。另有 14 项实际容量/长度边界检查。它们不能替代真实模型验收。
 
-已检查前端脚本语法、页面资源 HTTP 响应和前后端接口契约。当前自动化环境的浏览器连接受限，尚未完成真实浏览器中的交互与视觉验收；运行后请按演示步骤检查页面。临时验证服务器已停止，使用上述启动入口即可重新运行。
+`tools/check_real_rag.py` 对已配置的 Ollama 或兼容 API 做实际验证，使用临时库，要求语义检索＋真实生成＋有效引文，降级不会冒充通过。会员方案在实际授权账户内创建合成验收库测试，凭据保持原位。进展见 [RAG 修订验收](docs/rag-validation.md)。
 
-- [需求与验收标准](docs/requirements.md)
-- [架构与扩展说明](docs/architecture.md)
-- [3–5 分钟课堂演示](docs/demo.md)
+## 工程与课程材料
 
-- [课程交付入口](coursework/README.md)：约 10 页需求报告、离线可点击低保真原型、两段 3–5 分钟答辩讲稿。
-- [独立边界检查](tools/README.md)：另外 14 项容量和长度边界检查，可单独复现。
+| 目录 | 用途 |
+| --- | --- |
+| backend/ | API、切片、向量、模型与 ChatGPT 授权 |
+| frontend/ | 中文网页、资料、模型状态、问答与引用 |
+| sample_docs/ | 三份虚构教学样例 |
+| tests/、tools/ | 回归、边界、真实模型验证 |
+| docs/ | 需求、架构、演示、验收 |
+| coursework/ | 需求报告、离线低保真原型、答辩讲稿 |
+| .vscode/ | 启动、调试、测试与模型安装任务 |
+| data/、.runtime/ | 本机数据和模型，不提交 |
 
-正式报告保留真实小组编号、姓名/学号、提交日期的待填写项。原型使用模拟数据；真实学生访谈、可用性实验及模型服务验收尚未完成，不应将拟议指标或演示样例写成实测结果。
+课程入口：[报告与原型](coursework/README.md)、[架构](docs/architecture.md)、[演示](docs/demo.md)。小组编号、成员姓名/学号及提交日期仍需填写。原型使用模拟数据；学生访谈、用户体验和性能指标不能用代码测试代替。
 
-项目仓库：[Cccchenzi/-](https://github.com/Cccchenzi/-)。发布仅包含代码和课程材料；`.venv/`、`data/`、`.env` 不进入版本库。
-
-## 数据与备份
-
-资料、密码哈希、会话及引用快照保存在 `data/`，退出登录不会删除资料。停止服务后备份整个 `data/` 目录，包含数据库、上传文件和会话签名密钥。本地账号隔离不等于磁盘加密。应用默认仅监听本机，是课堂与个人本地版本，尚未做公网部署配置。
+仓库：[Cccchenzi/-](https://github.com/Cccchenzi/-)。默认只监听本机；停止服务后备份 data/。授权文件绑定当前 Windows 账户，不能视为跨电脑免登录凭据。不要把自己的文档、数据库、模型或 .env 上传 GitHub。

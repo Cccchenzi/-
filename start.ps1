@@ -5,7 +5,7 @@ $ProjectPython = Join-Path $PSScriptRoot '.venv/Scripts/python.exe'
 if (-not (Test-Path -LiteralPath $ProjectPython)) {
     & (Join-Path $PSScriptRoot 'setup.ps1')
 }
-& $ProjectPython -c 'import flask, pypdf' 2>$null
+& $ProjectPython -c 'import flask, pypdf, jwt' 2>$null
 if ($LASTEXITCODE -ne 0) { & (Join-Path $PSScriptRoot 'setup.ps1') }
 $LaunchArguments = @('run.py', '--port', "$Port")
 if (-not $NoBrowser) { $LaunchArguments += '--open-browser' }

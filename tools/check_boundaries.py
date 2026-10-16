@@ -66,6 +66,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="zhiwei-exact-boundaries-") as directory:
         app = create_app({"TESTING": True, "DATA_DIR": directory, "SECRET_KEY": "temporary-boundary-test-secret",
+                          "RAG_PROVIDER": "local", "EMBEDDING_PROVIDER": "",
                           "AI_API_KEY": "", "AI_BASE_URL": "", "AI_MODEL": ""})
         client = app.test_client()
         assert client.post("/api/auth/register", json={"username": "boundary_tester", "password": "temporary-pass-2026"}).status_code == 201

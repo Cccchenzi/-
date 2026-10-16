@@ -18,9 +18,10 @@ from flask import Flask, g, jsonify, request, send_from_directory, session
 from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from . import providers
 from .documents import DocumentError, MAX_FILE_BYTES, parse_document, safe_display_name
-from .rag import answer_question, model_configured
-from .vector_store import LocalTfidfStore, encode_token_counts
+from .rag import answer_question
+from .vector_store import DenseVectorStore, LocalTfidfStore, encode_token_counts
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -43,7 +44,11 @@ CREATE TABLE IF NOT EXISTS chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT, document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     content TEXT NOT NULL, page INTEGER, start_line INTEGER NOT NULL,
     end_line INTEGER NOT NULL, ordinal INTEGER NOT NULL,
-    token_counts_json TEXT NOT NULL DEFAULT '{}'
+    token_counts_json TEXT NOT NULL DEFAULT '{}',
+    embedding_json TEXT NOT NULL DEFAULT '[]',
+    embedding_fingerprint TEXT NOT NULL DEFAULT '',
+    embedding_status TEXT NOT NULL DEFAULT 'pending',
+    embedding_error TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT, library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
@@ -52,7 +57,8 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK(role IN ('user','assistant')), content TEXT NOT NULL,
-    citations_json TEXT NOT NULL DEFAULT '[]', mode TEXT, created_at TEXT NOT NULL
+    citations_json TEXT NOT NULL DEFAULT '[]', mode TEXT, created_at TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_libraries_owner ON libraries(user_id);
 CREATE INDEX IF NOT EXISTS idx_documents_library ON documents(library_id);
@@ -93,6 +99,20 @@ def create_app(test_config: dict | None = None) -> Flask:
         AI_API_KEY=os.environ.get("AI_API_KEY", env.get("AI_API_KEY", "")),
         AI_BASE_URL=os.environ.get("AI_BASE_URL", env.get("AI_BASE_URL", "")),
         AI_MODEL=os.environ.get("AI_MODEL", env.get("AI_MODEL", "")),
+        AI_EMBED_MODEL=os.environ.get("AI_EMBED_MODEL", env.get("AI_EMBED_MODEL", "")),
+        AI_EMBED_BASE_URL=os.environ.get("AI_EMBED_BASE_URL", env.get("AI_EMBED_BASE_URL", "")),
+        AI_EMBED_API_KEY=os.environ.get("AI_EMBED_API_KEY", env.get("AI_EMBED_API_KEY", "")),
+        RAG_PROVIDER=os.environ.get("RAG_PROVIDER", env.get("RAG_PROVIDER", "auto")),
+        EMBEDDING_PROVIDER=os.environ.get("EMBEDDING_PROVIDER", env.get("EMBEDDING_PROVIDER", "")),
+        EMBEDDING_REVISION=os.environ.get("EMBEDDING_REVISION", env.get("EMBEDDING_REVISION", "")),
+        OLLAMA_BASE_URL=os.environ.get("OLLAMA_BASE_URL", env.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")),
+        OLLAMA_CHAT_MODEL=os.environ.get("OLLAMA_CHAT_MODEL", env.get("OLLAMA_CHAT_MODEL", "qwen3:4b")),
+        OLLAMA_EMBED_MODEL=os.environ.get("OLLAMA_EMBED_MODEL", env.get("OLLAMA_EMBED_MODEL", "qwen3-embedding:0.6b")),
+        MODEL_TIMEOUT=os.environ.get("MODEL_TIMEOUT", env.get("MODEL_TIMEOUT", "180")),
+        EMBED_TIMEOUT=os.environ.get("EMBED_TIMEOUT", env.get("EMBED_TIMEOUT", "180")),
+        CHECK_TIMEOUT=8,
+        EMBED_BATCH_SIZE=8,
+        MIN_EMBEDDING_SCORE=0.2,
         VECTOR_STORE=None,
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
@@ -102,8 +122,14 @@ def create_app(test_config: dict | None = None) -> Flask:
     )
     if test_config:
         app.config.update(test_config)
+    selected = str(app.config["RAG_PROVIDER"]).strip().lower()
+    if selected == "auto":
+        selected = "openai" if app.config["AI_API_KEY"] else "local"
+    if selected not in {"local", "ollama", "openai", "chatgpt"}:
+        raise ValueError("RAG_PROVIDER must be auto, local, ollama, openai or chatgpt.")
+    app.config["RAG_PROVIDER"] = selected
     if app.config["VECTOR_STORE"] is None:
-        app.config["VECTOR_STORE"] = LocalTfidfStore()
+        app.config["VECTOR_STORE"] = DenseVectorStore(app.config) if selected != "local" else LocalTfidfStore()
     if not callable(getattr(app.config["VECTOR_STORE"], "search", None)):
         raise ValueError("VECTOR_STORE must implement search(query, chunks, limit).")
     data_dir = Path(app.config["DATA_DIR"]).expanduser()
@@ -125,12 +151,20 @@ def create_app(test_config: dict | None = None) -> Flask:
                 pass
         app.config["SECRET_KEY"] = key_path.read_text(encoding="ascii").strip()
     app.json.ensure_ascii = False
+    app.extensions["model_checks_by_user"] = {}
     with closing(sqlite3.connect(app.config["DATABASE"])) as connection:
         connection.execute("PRAGMA journal_mode=WAL")
         connection.executescript(SCHEMA)
         columns = {row[1] for row in connection.execute("PRAGMA table_info(chunks)")}
-        if "token_counts_json" not in columns:
-            connection.execute("ALTER TABLE chunks ADD COLUMN token_counts_json TEXT NOT NULL DEFAULT '{}'")
+        additions = {"token_counts_json": "TEXT NOT NULL DEFAULT '{}'", "embedding_json": "TEXT NOT NULL DEFAULT '[]'",
+                     "embedding_fingerprint": "TEXT NOT NULL DEFAULT ''", "embedding_status": "TEXT NOT NULL DEFAULT 'pending'",
+                     "embedding_error": "TEXT NOT NULL DEFAULT ''"}
+        for column, definition in additions.items():
+            if column not in columns:
+                connection.execute(f"ALTER TABLE chunks ADD COLUMN {column} {definition}")
+        message_columns = {row[1] for row in connection.execute("PRAGMA table_info(messages)")}
+        if "metadata_json" not in message_columns:
+            connection.execute("ALTER TABLE messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
         connection.commit()
 
     def database():
@@ -227,20 +261,72 @@ def create_app(test_config: dict | None = None) -> Flask:
         result["document_count"] = connection.execute("SELECT count(*) FROM documents WHERE library_id=?", (row["id"],)).fetchone()[0]
         result["chunk_count"] = connection.execute("SELECT count(*) FROM chunks c JOIN documents d ON c.document_id=d.id WHERE d.library_id=?", (row["id"],)).fetchone()[0]
         result["session_count"] = connection.execute("SELECT count(*) FROM chat_sessions WHERE library_id=?", (row["id"],)).fetchone()[0]
+        fingerprint = providers.embedding_fingerprint(app.config)
+        result["embedded_chunk_count"] = connection.execute("""SELECT count(*) FROM chunks c JOIN documents d ON c.document_id=d.id
+            WHERE d.library_id=? AND c.embedding_status='ready' AND c.embedding_fingerprint=?""", (row["id"], fingerprint)).fetchone()[0]
+        result["pending_chunk_count"] = result["chunk_count"] - result["embedded_chunk_count"]
         return result
 
     def document_json(row):
         result = {key: row[key] for key in ("id", "name", "size", "created_at")}
         result["chunk_count"] = database().execute("SELECT count(*) FROM chunks WHERE document_id=?", (row["id"],)).fetchone()[0]
+        rows = database().execute("SELECT embedding_status,embedding_fingerprint,embedding_error FROM chunks WHERE document_id=?", (row["id"],)).fetchall()
+        fingerprint = providers.embedding_fingerprint(app.config)
+        ready = sum(item["embedding_status"] == "ready" and item["embedding_fingerprint"] == fingerprint for item in rows)
+        errors = [item["embedding_error"] for item in rows if item["embedding_status"] == "error" and item["embedding_error"]]
+        result["embedded_chunk_count"] = ready
+        result["index_status"] = "ready" if rows and ready == len(rows) else "partial" if ready else "error" if errors else "pending"
+        result["index_error"] = errors[0] if errors else ("待使用当前嵌入模型建立语义索引。" if ready < len(rows) else "")
         return result
 
     def message_json(row):
         result = {key: row[key] for key in ("id", "role", "content", "mode", "created_at")}
         result["citations"] = json.loads(row["citations_json"])
+        result.update(json.loads(row["metadata_json"]))
         for citation in result["citations"]:
             exists = database().execute("SELECT id FROM documents WHERE id=?", (citation["document_id"],)).fetchone()
             citation["available"] = exists is not None
         return result
+
+    def index_document_rows(document_ids, force=False):
+        """Commit each valid embedding batch; failures never remove source data."""
+        if not document_ids:
+            return {"indexed_chunks": 0, "failed_chunks": 0, "pending_chunks": 0}
+        connection = database()
+        markers = ",".join("?" for _ in document_ids)
+        rows = connection.execute(f"SELECT * FROM chunks WHERE document_id IN ({markers}) ORDER BY id", document_ids).fetchall()
+        fingerprint = providers.embedding_fingerprint(app.config)
+        pending = [row for row in rows if force or row["embedding_status"] != "ready" or row["embedding_fingerprint"] != fingerprint]
+        if not providers.embedding_configured(app.config):
+            return {"indexed_chunks": 0, "failed_chunks": 0, "pending_chunks": len(pending)}
+        indexed, failed = 0, 0
+        batch_size = max(1, min(32, int(app.config.get("EMBED_BATCH_SIZE", 8))))
+        expected_dimension = None
+        for start in range(0, len(pending), batch_size):
+            batch = pending[start:start + batch_size]
+            try:
+                vectors = providers.normalize_vectors(providers.embed_texts([row["content"] for row in batch], app.config), len(batch))
+                if expected_dimension is not None and len(vectors[0]) != expected_dimension:
+                    raise providers.ProviderError("嵌入服务在同次索引中返回了不一致维度。")
+                expected_dimension = len(vectors[0])
+                with connection:
+                    for row, vector in zip(batch, vectors):
+                        connection.execute("""UPDATE chunks SET embedding_json=?,embedding_fingerprint=?,embedding_status='ready',embedding_error='' WHERE id=?""",
+                                           (json.dumps(vector, separators=(",", ":"), allow_nan=False), fingerprint, row["id"]))
+                indexed += len(batch)
+            except Exception:
+                # Never persist provider exception bodies, credentials or URLs.
+                error = "语义索引生成失败：模型不可用或向量响应无效。原文已保存，请检查服务后重建索引。"
+                remaining = pending[start:]
+                with connection:
+                    for row in remaining:
+                        # Keep a valid old embedding if a forced refresh fails.
+                        if row["embedding_status"] == "ready" and row["embedding_fingerprint"] == fingerprint:
+                            continue
+                        connection.execute("UPDATE chunks SET embedding_status='error',embedding_error=? WHERE id=?", (error, row["id"]))
+                failed += len(remaining)
+                break
+        return {"indexed_chunks": indexed, "failed_chunks": failed, "pending_chunks": 0}
 
     def add_document(library_id, raw_name, payload):
         name = safe_display_name(raw_name)
@@ -262,19 +348,53 @@ def create_app(test_config: dict | None = None) -> Flask:
         except Exception:
             target.unlink(missing_ok=True)
             raise
+        index_document_rows([document_id])
         return document_json(connection.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone())
 
     @app.get("/api/health")
     def health():
-        configured = model_configured(app.config)
-        return jsonify(status="ok", mode="llm" if configured else "extractive", model=app.config["AI_MODEL"] if configured else None, embedding="local-tfidf")
+        data = public_config()
+        return jsonify(status="ok", **data)
+
+    def public_config():
+        configured = providers.chat_configured(app.config)
+        status_config = app.config
+        if providers.provider_name(app.config) == "chatgpt":
+            # A membership/model check belongs to the signed-in app user. Never
+            # expose another user's cached account status through public config.
+            status_config = dict(app.config)
+            user_id = g.user["id"] if g.user else None
+            status_config["_MODEL_STATUS"] = app.extensions["model_checks_by_user"].get(user_id, {})
+        return {"mode": "llm" if configured else "extractive", "model": providers.settings(app.config)["chat_model"] if configured else None,
+                "embedding": "semantic" if providers.embedding_configured(app.config) else "local-tfidf", "provider_configured": configured,
+                "max_file_size_mb": 20, "max_files_per_batch": 10, "supported_extensions": [".pdf", ".md", ".txt"],
+                "rag": providers.status_snapshot(status_config)}
 
     @app.get("/api/config")
     def config():
-        configured = model_configured(app.config)
-        return jsonify(mode="llm" if configured else "extractive", model=app.config["AI_MODEL"] if configured else None,
-                       embedding="local-tfidf", provider_configured=configured, max_file_size_mb=20,
-                       max_files_per_batch=10, supported_extensions=[".pdf", ".md", ".txt"])
+        return jsonify(public_config())
+
+    @app.post("/api/models/check")
+    @authenticated
+    def check_models():
+        checked = providers.check_models(app.config)
+        if providers.provider_name(app.config) == "chatgpt":
+            app.extensions["model_checks_by_user"][g.user["id"]] = checked
+        else:
+            app.config["_MODEL_STATUS"] = checked
+        return jsonify(public_config())
+
+    @app.post("/api/libraries/<int:library_id>/reindex")
+    @authenticated
+    def reindex(library_id):
+        library = owned_library(library_id)
+        documents = database().execute("SELECT * FROM documents WHERE library_id=? ORDER BY id", (library_id,)).fetchall()
+        counts = index_document_rows([row["id"] for row in documents], force=True)
+        refreshed = library_json(library)
+        counts["pending_chunks"] = refreshed["pending_chunk_count"]
+        notice = ("语义索引已重建。" if not counts["failed_chunks"] and not counts["pending_chunks"] else
+                  "本次索引未全部完成，原文及既有可用向量均已保留；请检查嵌入模型后重试。")
+        return jsonify(library=refreshed, documents=[document_json(row) for row in documents], notice=notice, **counts)
 
     @app.get("/api/auth/me")
     @authenticated
@@ -451,13 +571,14 @@ def create_app(test_config: dict | None = None) -> Flask:
         history = [dict(row) for row in connection.execute("SELECT role,content FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 12", (session_id,)).fetchall()][::-1]
         chunks = [dict(row) for row in connection.execute("""SELECT c.*, d.name AS document_name FROM chunks c
             JOIN documents d ON c.document_id=d.id WHERE d.library_id=? ORDER BY c.id""", (chat_session["library_id"],))]
-        content, citations, mode, notice = answer_question(question, chunks, history, app.config)
+        metadata = {}
+        content, citations, mode, notice = answer_question(question, chunks, history, app.config, metadata=metadata)
         # The optional network call runs before beginning the write transaction.
         owned_session(session_id)
         with connection:
             user_cursor = connection.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES(?,?,?,?)", (session_id, "user", question, now()))
-            assistant_cursor = connection.execute("INSERT INTO messages(session_id,role,content,citations_json,mode,created_at) VALUES(?,?,?,?,?,?)",
-                                                  (session_id, "assistant", content, json.dumps(citations, ensure_ascii=False), mode, now()))
+            assistant_cursor = connection.execute("INSERT INTO messages(session_id,role,content,citations_json,mode,created_at,metadata_json) VALUES(?,?,?,?,?,?,?)",
+                                                  (session_id, "assistant", content, json.dumps(citations, ensure_ascii=False), mode, now(), json.dumps(metadata, ensure_ascii=False)))
             if not history:
                 connection.execute("UPDATE chat_sessions SET title=? WHERE id=?", (question[:32], session_id))
         result = {"user_message": message_json(connection.execute("SELECT * FROM messages WHERE id=?", (user_cursor.lastrowid,)).fetchone()),
@@ -476,4 +597,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             raise ApiError("接口不存在。", 404)
         return send_from_directory(PROJECT_ROOT / "frontend", filename)
 
+    if app.config["RAG_PROVIDER"] == "chatgpt":
+        from .chatgpt_auth import init_chatgpt
+        init_chatgpt(app)
     return app

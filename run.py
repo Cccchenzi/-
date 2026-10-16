@@ -4,6 +4,7 @@ import threading
 import webbrowser
 
 from backend import create_app
+from tools.local_runtime import start_local_runtime
 
 
 def main():
@@ -12,11 +13,16 @@ def main():
     parser.add_argument("--open-browser", action="store_true")
     args = parser.parse_args()
     app = create_app()
+    model_process = start_local_runtime(app.config)
     url = f"http://127.0.0.1:{args.port}"
     print(f"\nZhiwei is starting at {url}\nPress Ctrl+C to stop.\n", flush=True)
     if args.open_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    app.run(host="127.0.0.1", port=args.port, debug=False, threaded=True)
+    try:
+        app.run(host="127.0.0.1", port=args.port, debug=False, threaded=True)
+    finally:
+        if model_process is not None and model_process.poll() is None:
+            model_process.terminate()
 
 
 if __name__ == "__main__":

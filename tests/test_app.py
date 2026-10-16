@@ -52,6 +52,8 @@ class AppAcceptanceTests(unittest.TestCase):
             "TESTING": True,
             "DATA_DIR": self.directory.name,
             "SECRET_KEY": "test-only-secret",
+            "RAG_PROVIDER": "local",
+            "EMBEDDING_PROVIDER": "",
             "AI_API_KEY": "",
             "AI_BASE_URL": "",
             "AI_MODEL": "",
@@ -96,7 +98,10 @@ class AppAcceptanceTests(unittest.TestCase):
         return response.get_json()["documents"][0]["id"], content
 
     def configure_fake_model(self):
-        self.app.config.update(AI_API_KEY="test-key-never-sent", AI_BASE_URL="https://example.invalid/v1", AI_MODEL="test-model")
+        # Exercise structured generation explicitly. This fixture retains its
+        # local search adapter so no real embedding service is needed.
+        self.app.config.update(RAG_PROVIDER="openai", AI_API_KEY="test-key-never-sent",
+                               AI_BASE_URL="https://example.invalid/v1", AI_MODEL="test-model", AI_EMBED_MODEL="")
 
     def test_authentication_lifecycle_and_password_hash(self):
         self.assertEqual(self.client.get("/api/auth/me").get_json()["user"]["username"], "student_a")
@@ -227,7 +232,7 @@ class AppAcceptanceTests(unittest.TestCase):
 
     def test_empty_library_and_unrelated_questions_refuse_without_model_call(self):
         self.configure_fake_model()
-        with patch("backend.rag._call_model") as model:
+        with patch("backend.rag._call_grounded_model") as model:
             response = self.ask(self.chat(), "火星的直径是多少？")
             answer = response.get_json()["assistant_message"]
             self.assertEqual(answer["mode"], "refusal")
@@ -312,10 +317,14 @@ class AppAcceptanceTests(unittest.TestCase):
         unrelated = self.library(self.client, "私人独立资料")
         self.upload([("secret.txt", "另一资料库的 secret token 是 orchid-928。")], library_id=unrelated)
         self.configure_fake_model()
-        with patch("backend.rag._call_model", return_value="海棠实验的校准周期为七天。[1]") as model:
+        structured = {"insufficient": False, "claims": [{"text": "海棠实验的校准周期为七天。",
+                      "evidence": [{"index": 1, "quote": "海棠实验的校准周期为七天。"}]}]}
+        with patch("backend.rag._call_grounded_model", return_value=structured) as model:
             response = self.ask(self.chat(), "海棠实验的校准周期是什么？")
         result = response.get_json()["assistant_message"]
         self.assertEqual(result["mode"], "llm")
+        self.assertEqual(result["generation_status"], "validated")
+        self.assertEqual(result["citations"][0]["quotes"], ["海棠实验的校准周期为七天。"])
         sent_citations = model.call_args.args[1]
         self.assertTrue(sent_citations)
         self.assertTrue(all(citation["document_id"] == document_id for citation in sent_citations))
@@ -326,9 +335,10 @@ class AppAcceptanceTests(unittest.TestCase):
         self.configure_fake_model()
         for behavior in ["timeout", "invalid", "missing"]:
             with self.subTest(behavior=behavior):
+                evidence = [{"index": 999, "quote": "海棠实验的校准周期为七天。"}] if behavior == "invalid" else []
                 kwargs = ({"side_effect": TimeoutError("private provider secret should not leak")} if behavior == "timeout"
-                          else {"return_value": "无效答案。[999]" if behavior == "invalid" else "没有引用编号的答案。"})
-                with patch("backend.rag._call_model", **kwargs):
+                          else {"return_value": {"insufficient": False, "claims": [{"text": "校准周期为七天。", "evidence": evidence}]}})
+                with patch("backend.rag._call_grounded_model", **kwargs):
                     response = self.ask(self.chat(), "海棠实验的校准周期是什么？")
                 self.assertEqual(response.status_code, 200)
                 result = response.get_json()
@@ -340,15 +350,48 @@ class AppAcceptanceTests(unittest.TestCase):
 
     def test_incomplete_model_configuration_stays_local(self):
         self.upload_fact()
-        self.app.config.update(AI_API_KEY="test-key-never-sent", AI_BASE_URL="", AI_MODEL="")
-        with patch("backend.rag._call_model") as model:
+        self.app.config.update(RAG_PROVIDER="openai", AI_API_KEY="test-key-never-sent", AI_BASE_URL="", AI_MODEL="")
+        with patch("backend.providers._request_json") as model:
             result = self.ask(self.chat(), "海棠实验的校准周期是什么？").get_json()
             answer = result["assistant_message"]
             self.assertEqual(answer["mode"], "extractive-fallback")
             self.assertIn("七天", answer["content"])
-            self.assertIn("配置不完整", result["notice"])
+            self.assertIn("生成模型不可用", result["notice"])
             model.assert_not_called()
         self.assertFalse(self.client.get("/api/config").get_json()["provider_configured"])
+
+    def test_explicit_local_mode_never_uses_leftover_provider_settings(self):
+        # Switching to local must stop both uploads and questions from sending
+        # document contents to a previously configured provider.
+        self.app.config.update(AI_API_KEY="leftover-key-never-sent", AI_BASE_URL="https://example.invalid/v1",
+                               AI_MODEL="leftover-chat", AI_EMBED_MODEL="leftover-embedding",
+                               AI_EMBED_API_KEY="leftover-embedding-key", AI_EMBED_BASE_URL="https://embedding.invalid/v1",
+                               CHAT_PROVIDER_CONFIGURED=True, CHAT_JSON_PROVIDER=lambda *_args: {"ok": True})
+        for embedding_provider in ("openai", "ollama"):
+            with self.subTest(embedding_provider=embedding_provider):
+                self.app.config["EMBEDDING_PROVIDER"] = embedding_provider
+                library_id = self.library(self.client, "离线验证 " + embedding_provider)
+                with patch("backend.providers.embed_texts") as embedding, \
+                        patch("backend.providers.chat_json") as generation, \
+                        patch("backend.providers._request_json") as http:
+                    uploaded = self.upload([("离线笔记.txt", "离线实验的校准周期为七天。")], library_id=library_id)
+                    self.assertEqual(uploaded.status_code, 201)
+                    self.assertEqual(self.client.post(f"/api/libraries/{library_id}/reindex").status_code, 200)
+                    session_id = self.chat(library_id=library_id)
+                    for question in ("离线实验的校准周期？", "它的周期呢？"):
+                        answer = self.ask(session_id, question).get_json()["assistant_message"]
+                        self.assertEqual(answer["mode"], "extractive")
+                        self.assertEqual(answer["retrieval_mode"], "lexical")
+                        self.assertIn("七天", answer["content"])
+                    status = self.client.post("/api/models/check").get_json()
+                    self.assertEqual(status["mode"], "extractive")
+                    self.assertEqual(status["embedding"], "local-tfidf")
+                    self.assertFalse(status["provider_configured"])
+                    self.assertFalse(status["rag"]["configured"])
+                    self.assertFalse(status["rag"]["connected"])
+                    embedding.assert_not_called()
+                    generation.assert_not_called()
+                    http.assert_not_called()
 
     def test_uploaded_term_vectors_persist_and_reopen(self):
         document_id, _ = self.upload_fact()
