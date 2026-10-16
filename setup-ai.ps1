@@ -81,5 +81,5 @@ if ($WithLocalChat) {
 if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot '.env'))) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot '.env.example') -Destination (Join-Path $PSScriptRoot '.env')
 }
-Write-Host 'AI setup ready. Start Zhiwei, sign in, then click Continue with ChatGPT.' -ForegroundColor Green
+Write-Host 'Local embeddings are ready. Set DEEPSEEK_API_KEY in .env, restart Zhiwei, then check the model connection.' -ForegroundColor Green
 Write-Host 'For fully local chat, set RAG_PROVIDER=ollama in .env and restart.'

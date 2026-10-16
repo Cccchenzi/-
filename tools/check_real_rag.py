@@ -25,7 +25,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from backend import create_app  # noqa: E402
+from backend import create_app, providers  # noqa: E402
 from backend.vector_store import tokenize  # noqa: E402
 
 
@@ -45,11 +45,12 @@ SOURCES = {
 
 def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--provider", choices=["ollama", "openai"], help="Default: project .env/environment RAG_PROVIDER")
+    parser.add_argument("--provider", choices=["deepseek", "ollama", "openai"], help="Default: project .env/environment RAG_PROVIDER, otherwise deepseek")
     parser.add_argument("--ollama-url", help="Override the Ollama base URL")
-    parser.add_argument("--base-url", help="Override the OpenAI-compatible base URL; key stays in .env/environment")
+    parser.add_argument("--base-url", help="Override DeepSeek/OpenAI-compatible base URL; key stays in .env/environment")
     parser.add_argument("--chat-model", help="Override the selected provider's chat model")
     parser.add_argument("--embedding-model", help="Override the selected provider's embedding model")
+    parser.add_argument("--embedding-provider", choices=["ollama", "openai"], help="Override the separate embedding provider; DeepSeek defaults to local Ollama")
     parser.add_argument("--output", type=Path, help="JSON report location; default: a system temporary file")
     return parser.parse_args()
 
@@ -65,8 +66,9 @@ def configured_provider(args):
                 key, separator, value = line.strip().partition("=")
                 if separator and key.strip() == "RAG_PROVIDER":
                     provider = value.strip().strip('"').strip("'")
-    if provider not in {"ollama", "openai"}:
-        raise ValueError("Select --provider ollama/openai or set RAG_PROVIDER in project .env; local is not a real RAG acceptance mode.")
+    provider = provider.lower() or "deepseek"
+    if provider not in {"deepseek", "ollama", "openai"}:
+        raise ValueError("Select --provider deepseek/ollama/openai or set RAG_PROVIDER in project .env; local is not real RAG and membership authorization is not copied into this isolated test.")
     return provider
 
 
@@ -169,24 +171,30 @@ def run(args):
         if args.ollama_url:
             config["OLLAMA_BASE_URL"] = args.ollama_url
         if args.base_url:
-            config["AI_BASE_URL"] = args.base_url
+            config["DEEPSEEK_BASE_URL" if provider == "deepseek" else "AI_BASE_URL"] = args.base_url
         if args.chat_model:
-            config["OLLAMA_CHAT_MODEL" if provider == "ollama" else "AI_MODEL"] = args.chat_model
-        if args.embedding_model:
-            config["OLLAMA_EMBED_MODEL" if provider == "ollama" else "AI_EMBED_MODEL"] = args.embedding_model
+            config[{"ollama": "OLLAMA_CHAT_MODEL", "deepseek": "DEEPSEEK_MODEL"}.get(provider, "AI_MODEL")] = args.chat_model
+        if args.embedding_provider:
+            config["EMBEDDING_PROVIDER"] = args.embedding_provider
         app = create_app(config)
+        if args.embedding_model:
+            embedding_provider = providers.embedding_settings(app.config)["provider"]
+            app.config["OLLAMA_EMBED_MODEL" if embedding_provider == "ollama" else "AI_EMBED_MODEL"] = args.embedding_model
         report["models"] = {
             "provider": provider,
-            "chat": app.config["OLLAMA_CHAT_MODEL" if provider == "ollama" else "AI_MODEL"],
-            "embedding": app.config["OLLAMA_EMBED_MODEL" if provider == "ollama" else "AI_EMBED_MODEL"],
+            "chat": providers.settings(app.config)["chat_model"],
+            "embedding": providers.embedding_settings(app.config)["model"],
+            "embedding_provider": providers.embedding_settings(app.config)["provider"],
         }
         client = app.test_client()
         create_user(client, "real_rag_" + secrets.token_hex(4))
         readiness = json_response(client.post("/api/models/check"))
         report["provider_check"] = readiness
-        if not checks.add("real_models_connected", readiness.get("rag", {}).get("connected") is True, readiness):
+        rag_status = readiness.get("rag", {})
+        if not checks.add("real_models_connected", all(rag_status.get(key) is True for key in ("connected", "chat_ready", "embedding_ready")), readiness):
             report["all_passed"] = False
             report["blocked"] = "Selected provider or requested model unavailable; no RAG success claimed."
+            report.update(passed=0, total=len(checks.results), temporary_data_removed=True)
             return report
         library_id = create_library(client, "合成RAG验收资料")
         uploaded = upload(client, library_id, SOURCES)

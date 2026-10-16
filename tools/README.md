@@ -8,7 +8,7 @@
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-`tests/` 覆盖业务、语义索引、结构化引文、故障、数据隔离和会员授权边界。使用临时数据和模拟远端服务，不需要真实会员或 API Key；通过数量以本次输出为准，不能等同于真实模型问答准确率。
+`tests/` 覆盖业务、语义索引、结构化引文、故障、数据隔离、DeepSeek适配和可选会员授权边界。使用临时数据和模拟远端服务，不需要真实会员或API Key；通过数量以实际输出为准，不能视为DeepSeek真实接通或问答准确率。
 
 ## 精确边界：check_boundaries.py
 
@@ -39,6 +39,9 @@
 该脚本使用应用测试客户端，但实际请求选定的生成和嵌入模型。它读取项目 `.env` 或环境变量中的配置，在临时数据库创建合成资料；不读取、修改或删除正常应用的数据目录。运行前须自行安装、启动或配置对应服务。
 
 ```powershell
+# 默认DeepSeek：先在本地.env填DEEPSEEK_API_KEY，嵌入保持EMBEDDING_PROVIDER=ollama
+.\.venv\Scripts\python.exe tools/check_real_rag.py --provider deepseek
+
 # 已安装本地生成和嵌入模型，并确认 EMBEDDING_PROVIDER=ollama
 .\.venv\Scripts\python.exe tools/check_real_rag.py --provider ollama
 
@@ -46,12 +49,14 @@
 .\.venv\Scripts\python.exe tools/check_real_rag.py --provider openai
 ```
 
-可用参数包括 `--provider`、`--ollama-url`、`--base-url`、`--chat-model`、`--embedding-model`、`--output`；完整参数用 `--help` 查看。`EMBEDDING_PROVIDER` 仍由配置决定，`--provider` 只选择生成接入方式。远程服务会接收合成问题、证据及必要上下文，并可能产生费用。
+默认DeepSeek配置为 `DEEPSEEK_BASE_URL=https://api.deepseek.com` 和 `DEEPSEEK_MODEL=deepseek-flash`，密钥仅取独立的 `DEEPSEEK_API_KEY`。当前尚未填写真实密钥，DeepSeek真实检查未执行；取得密钥后再运行，不复用历史会员通过结论。
+
+可用参数包括 `--provider`、`--ollama-url`、`--base-url`、`--chat-model`、`--embedding-provider`、`--embedding-model`、`--output`；完整参数用 `--help` 查看。在DeepSeek模式中，`--base-url` 覆盖 `DEEPSEEK_BASE_URL`，`--chat-model` 覆盖 `DEEPSEEK_MODEL`。嵌入默认使用本地Ollama，`--embedding-provider ollama/openai` 可独立选择；`--embedding-model` 覆盖所选嵌入模型，本地对应 `OLLAMA_EMBED_MODEL`。远程服务会接收合成问题、证据及必要上下文，并可能产生API费用；不要把密钥放在命令行。
 
 检查要求真实向量持久化、同义检索、跨文档生成、多轮指代及有效逐字引文，同时核对拒答、账户/知识库隔离和删除后检索。摘录降级不能作为正向生成通过。JSON 报告默认写入系统临时目录，可用 `--output` 指定位置；数量和结果以实际报告为准。
 
-**目前该独立脚本仅支持 `ollama` 与 `openai`，不支持 `chatgpt`。** 不要复制会员令牌或授权文件到临时数据库来绕过这一限制。会员验收在本人已授权的应用账户内新建合成测试库完成，范围及结果见 [验收记录](../docs/rag-validation.md)。
+**独立脚本支持 `deepseek`、`ollama` 与 `openai`，不支持 `chatgpt`。** 不要复制会员令牌或授权文件到临时数据库。历史会员验收在本人已授权账户内新建合成库完成，范围见[验收记录](../docs/rag-validation.md)；其11项不属于DeepSeek验收。
 
 ## 本机运行时：local_runtime.py
 
-此模块由启动流程调用，用于发现或启动已安装的本机 Ollama 服务；它不是验收脚本，也不会在应用启动时自动下载模型。首次安装使用项目根目录 `setup-ai.bat`，运行时与模型文件不提交 Git。推荐只安装 `qwen3-embedding:0.6b` 供会员方案向量化；完全本地生成的额外安装与配置见 [README](../README.md)。
+此模块由启动流程调用，用于发现或启动已安装的本机Ollama服务；它不是验收脚本，也不会在应用启动时自动下载模型。首次安装使用项目根目录 `setup-ai.bat`，运行时与模型文件不提交Git。默认只需安装 `qwen3-embedding:0.6b` 供DeepSeek方案本地向量化；完全本地生成的额外配置见[README](../README.md)。

@@ -69,6 +69,7 @@ function modelSummary() {
   if(state.configError)return {label:'模型状态未知',text:'无法读取最新模型状态。打开状态面板查看原因并重试。',kind:'warning'};
   if(!rag)return {label:'模型状态待读取',text:'尚未取得模型运行状态；配置存在不代表服务已连通。',kind:'pending'};
   if(rag.provider==='local')return {label:'仅原文摘录',text:'当前使用原文摘录模式，不调用生成模型，也不提供生成式回答。',kind:'neutral'};
+  if(rag.provider==='deepseek'&&!rag.configured)return {label:'DeepSeek 待配置',text:'DeepSeek 配置尚未完成。请在本机 .env 填写 DEEPSEEK_API_KEY，保存并重启后检查模型连接；当前未确认 AI 生成可用。',kind:'warning'};
   if(!rag.configured)return {label:'模型未配置',text:'模型配置不完整；仅能展示检索原文。配置模型后请检查连接。',kind:'warning'};
   if(!rag.checked)return {label:'模型待检查',text:'模型已配置，尚未验证连通性。可先检查生成模型和向量模型。',kind:'pending'};
   if(rag.connected&&rag.chat_ready&&rag.embedding_ready)return {label:'模型检查通过',text:'生成模型与向量模型检查通过。实际回答模式及检索方式会逐条标明。',kind:'ready'};
@@ -77,7 +78,7 @@ function modelSummary() {
 function renderModelStatus() {
   const summary=modelSummary();$('mode-label').textContent=summary.label;$('mode-button').dataset.status=summary.kind;
   $('rag-summary').dataset.status=summary.kind;$('rag-summary-text').textContent=summary.text;
-  $('storage-label').textContent=ragState()?.provider==='local'?'资料在本机 · 仅原文摘录':'资料在本机 · 模型状态可检查';
+  $('storage-label').textContent=ragState()?.provider==='local'?'资料在本机 · 仅原文摘录':ragState()?.provider==='deepseek'?'原件在本机 · DeepSeek API':'原件在本机 · 模型状态可检查';
   renderIndexStatus();updateComposer();
 }
 function indexSummary() {
@@ -326,16 +327,35 @@ function renderModelDialog(){
   const body=$('modal-body');body.replaceChildren();const rag=ragState();const summary=modelSummary();
   body.append(el('p','model-overview',state.modelLoading?'正在读取最新配置与检查记录…':summary.text));
   const readiness=value=>state.configError?'无法确认':state.modelChecking?'检查中…':rag?.provider==='local'?'未启用':!rag?.checked?'尚未检查':value?'模型可访问':'尚不可用';
-  const provider=({chatgpt:'ChatGPT 会员登录',openai:'在线 API（兼容 OpenAI）',ollama:'Ollama 服务',local:'本地词法检索'})[rag?.provider]||'尚未读取';
+  const provider=({deepseek:'DeepSeek API',chatgpt:'ChatGPT 会员登录',openai:'在线 API（兼容 OpenAI）',ollama:'Ollama 服务',local:'本地词法检索'})[rag?.provider]||'尚未读取';
   const embeddingProvider=({openai:'在线 API（兼容 OpenAI）',ollama:'Ollama 服务',local:'本地词法检索'})[rag?.embedding_provider]||'按服务配置';
   for(const [key,value] of [['服务方式',provider],['生成模型',rag?.chat_model||'未配置'],['生成模型检查',readiness(rag?.chat_ready)],['向量服务',embeddingProvider],['向量模型',rag?.embedding_model||'未配置'],['向量模型检查',readiness(rag?.embedding_ready)]]){const row=el('div','info-row');row.append(el('span','',key),el('strong','',value));body.append(row);}
   if(state.configError){const error=el('p','modal-error',state.configError);error.setAttribute('role','alert');body.append(error);}
   else if(rag?.message)body.append(el('div','model-check-detail',rag.message));
+  if(rag?.provider==='deepseek')renderDeepseekSetup(body);
   if(rag?.provider==='chatgpt')renderChatgptControls(body);
   body.append(el('div','modal-note','连接检查用于验证服务和模型是否可访问；实际向量生成与回答结果会在文档、消息中分别标明。无模型或生成失败时的原文摘录不等同于 AI 生成。'));
-  body.append(el('p','model-configuration-help','模型配置见项目 README 与 .env.example，修改后重启服务。文本片段和问题会发送至已配置的模型服务；服务是否在本机取决于配置地址。密钥不在本页面填写。'));
+  body.append(el('p','model-configuration-help',modelDataUseText()));
+  if(rag?.provider!=='deepseek')body.append(el('p','model-configuration-help','模型配置见项目 README 与 .env.example，修改后重启服务。密钥不在本页面填写。'));
   const actions=el('div','modal-actions');const refresh=button('刷新状态',async()=>{if(state.modelLoading||state.modelChecking)return;state.modelLoading=true;renderModelDialog();await refreshModelConfig({silent:true});if(ragState()?.provider==='chatgpt')await refreshChatgptStatus();state.modelLoading=false;renderModelDialog();});refresh.disabled=state.modelLoading||state.modelChecking||state.chatgptBusy;
   const check=button(state.modelChecking?'正在检查…':rag?.checked?'重新检查模型':'检查模型连接',checkModels,'button primary');check.disabled=state.modelLoading||state.modelChecking||state.chatgptBusy||!state.user;if(state.modelChecking)check.prepend(spinner());actions.append(refresh,check);body.append(actions);
+}
+function modelDataUseText(){
+  const rag=ragState();
+  if(!rag)return '模型状态尚未读取。启用模型前，请确认所选服务与资料发送范围。';
+  if(rag.provider==='local')return '当前使用本机词法摘录，不向生成或嵌入模型服务发送资料。';
+  const service=({deepseek:'DeepSeek',chatgpt:'OpenAI（ChatGPT 会员服务）',openai:'已配置的在线 API 服务',ollama:'已配置的 Ollama 生成服务'})[rag.provider]||'已配置的生成服务';
+  const embedding=rag.embedding_provider==='ollama'?'向量化由 Ollama 处理，默认地址在本机；若更改服务地址，文本会发送至该地址。':'待向量化文本会发送至已配置的嵌入服务，是否在本机取决于服务地址。';
+  return `启用问答后，问题、检索片段及必要对话历史会发送至${service}。${embedding}`;
+}
+function renderDeepseekSetup(body){
+  const section=el('section','provider-setup');section.setAttribute('aria-label','DeepSeek API 配置说明');
+  section.append(el('h3','','配置 DeepSeek API'));
+  const steps=el('ol');
+  for(const text of ['在 DeepSeek 官方平台申请 API Key。','在本机项目的 .env 中填写 DEEPSEEK_API_KEY；此页面不收集密钥。','保存后重启服务，再点击“检查模型连接”。'])steps.append(el('li','',text));
+  const link=el('a','provider-key-link','前往 DeepSeek 官方平台申请 API Key');link.href='https://platform.deepseek.com/api_keys';link.target='_blank';link.rel='noopener noreferrer';
+  section.append(steps,link,el('p','provider-setup-note','默认地址 DEEPSEEK_BASE_URL=https://api.deepseek.com，默认模型 DEEPSEEK_MODEL=deepseek-flash。默认向量方案使用本机 Ollama。更多配置见 README 与 .env.example；请勿提交密钥到仓库。'));
+  body.append(section);
 }
 async function checkModels(){
   if(state.modelChecking||state.modelLoading||state.chatgptBusy||!state.user)return;const userId=state.user.id;const request=++state.modelRequest;state.modelChecking=true;state.configError='';renderModelStatus();renderModelDialog();

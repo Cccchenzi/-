@@ -1,4 +1,4 @@
-"""Small HTTP clients for actual Ollama/OpenAI-compatible embedding and chat.
+"""HTTP clients for Ollama embeddings and DeepSeek/OpenAI-compatible chat.
 
 No model or credentials are downloaded. Models must be installed/configured by
 the operator. Public errors deliberately omit upstream bodies and private URLs.
@@ -23,6 +23,13 @@ def provider_name(config):
 
 def settings(config):
     provider = provider_name(config)
+    if provider == "deepseek":
+        base = str(config.get("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").strip().rstrip("/")
+        if base.endswith("/chat/completions"):
+            base = base[:-len("/chat/completions")]
+        return {"provider": provider, "base": base,
+                "chat_model": str(config.get("DEEPSEEK_MODEL") or "deepseek-flash").strip(),
+                "embedding_model": "", "key": str(config.get("DEEPSEEK_API_KEY", "")).strip()}
     if provider == "ollama":
         return {"provider": provider, "base": str(config.get("OLLAMA_BASE_URL", "")).rstrip("/"),
                 "chat_model": str(config.get("OLLAMA_CHAT_MODEL", "")),
@@ -39,7 +46,7 @@ def settings(config):
 def chat_configured(config):
     if provider_name(config) == "local":
         return False
-    if callable(config.get("CHAT_JSON_PROVIDER")):
+    if provider_name(config) != "deepseek" and callable(config.get("CHAT_JSON_PROVIDER")):
         ready = config.get("CHAT_PROVIDER_CONFIGURED", False)
         return bool(ready(config) if callable(ready) else ready)
     data = settings(config)
@@ -48,19 +55,25 @@ def chat_configured(config):
 
 
 def embedding_settings(config):
-    selected = str(config.get("EMBEDDING_PROVIDER") or ("ollama" if provider_name(config) == "ollama" else "openai")).lower()
+    provider = provider_name(config)
+    selected = str(config.get("EMBEDDING_PROVIDER") or ("ollama" if provider in {"ollama", "deepseek", "chatgpt"} else "openai")).lower()
     if selected == "ollama":
         return {"provider": "ollama", "base": str(config.get("OLLAMA_BASE_URL", "")).rstrip("/"),
                 "model": str(config.get("OLLAMA_EMBED_MODEL", "")), "key": ""}
     data = settings(config)
-    return {"provider": "openai", "base": str(config.get("AI_EMBED_BASE_URL") or data["base"]).rstrip("/"),
-            "model": str(config.get("AI_EMBED_MODEL", "")), "key": str(config.get("AI_EMBED_API_KEY") or data["key"])}
+    # DeepSeek is a chat provider in this app. A separate online embedding
+    # service must have its own explicit endpoint/key; never inherit DeepSeek's.
+    return {"provider": "openai", "base": str(config.get("AI_EMBED_BASE_URL") or (data["base"] if provider != "deepseek" else "")).rstrip("/"),
+            "model": str(config.get("AI_EMBED_MODEL", "")),
+            "key": str(config.get("AI_EMBED_API_KEY") or (data["key"] if provider != "deepseek" else ""))}
 
 
 def embedding_configured(config):
     if provider_name(config) == "local":
         return False
     data = embedding_settings(config)
+    if data["provider"] == "openai" and urlsplit(data["base"]).hostname == "api.deepseek.com":
+        return False
     return bool(data["model"].strip() and data["base"].strip() and (data["provider"] == "ollama" or data["key"].strip()))
 
 
@@ -157,8 +170,10 @@ def embed_texts(texts, config):
 
 def chat_json(messages, config, schema=None, max_tokens=1800):
     if not chat_configured(config):
+        if provider_name(config) == "deepseek":
+            raise ProviderError("DeepSeek API Key 尚未配置，请在本地 .env 填写 DEEPSEEK_API_KEY 后重启。")
         raise ProviderError("生成模型配置不完整。")
-    if callable(config.get("CHAT_JSON_PROVIDER")):
+    if provider_name(config) != "deepseek" and callable(config.get("CHAT_JSON_PROVIDER")):
         result = config["CHAT_JSON_PROVIDER"](messages, config, schema, max_tokens)
         if not isinstance(result, dict):
             raise ProviderError("生成模型返回的答案结构无效。")
@@ -174,9 +189,18 @@ def chat_json(messages, config, schema=None, max_tokens=1800):
     else:
         payload = {"model": data["chat_model"], "messages": messages, "temperature": 0,
                    "max_tokens": max_tokens, "response_format": {"type": "json_object"}}
+        if data["provider"] == "deepseek":
+            # Official Chat Completions JSON mode, with thinking explicitly off.
+            # Prompts supplied by RAG/probes already request JSON and give shape.
+            payload.update(thinking={"type": "disabled"}, stream=False)
         response = _request_json(data["base"], "/chat/completions", payload, key=data["key"], timeout=timeout)
         try:
-            content = response["choices"][0]["message"]["content"]
+            choice = response["choices"][0]
+            if not isinstance(choice, dict):
+                raise ProviderError("生成模型没有返回有效答案。")
+            if data["provider"] == "deepseek" and choice.get("finish_reason") != "stop":
+                raise ProviderError("DeepSeek 回答未完整结束或已截断，未采用本次生成内容。")
+            content = choice["message"]["content"]
         except (KeyError, IndexError, TypeError):
             raise ProviderError("生成模型没有返回有效答案。") from None
     if not isinstance(content, str) or len(content) > 50000:
@@ -201,7 +225,10 @@ def status_snapshot(config):
             "connected": bool(same and previous.get("connected")), "chat_ready": bool(same and previous.get("chat_ready")),
             "embedding_ready": bool(same and previous.get("embedding_ready")),
             "message": previous.get("message") if same else ("尚未检查模型服务。" if complete else "当前为本地摘录，或模型配置不完整。")}
-    if callable(config.get("CHAT_STATUS_PROVIDER")):
+    if data["provider"] == "deepseek" and not data["key"]:
+        result.update(configured=False, checked=False, connected=False, chat_ready=False,
+                      message="DeepSeek API Key 尚未配置，请在本地 .env 填写 DEEPSEEK_API_KEY 后重启；当前仅能展示检索原文。")
+    if data["provider"] != "deepseek" and callable(config.get("CHAT_STATUS_PROVIDER")):
         state = config["CHAT_STATUS_PROVIDER"](config)
         same_profile = state.get("profile_id") == previous.get("profile_id") and state.get("profile_id") is not None
         result["checked"] = result["checked"] and same_profile
@@ -231,7 +258,7 @@ def check_models(config):
     chat_connected = embed_connected = False
     timeout = config.get("CHECK_TIMEOUT", 8)
     try:
-        if callable(config.get("CHAT_CHECK_PROVIDER")) or callable(config.get("CHAT_STATUS_PROVIDER")):
+        if data["provider"] != "deepseek" and (callable(config.get("CHAT_CHECK_PROVIDER")) or callable(config.get("CHAT_STATUS_PROVIDER"))):
             checker = config.get("CHAT_CHECK_PROVIDER") or config["CHAT_STATUS_PROVIDER"]
             state = checker(config)
             chat_connected = bool(state.get("connected"))
@@ -241,6 +268,8 @@ def check_models(config):
             if state.get("message"):
                 messages.append(str(state["message"]))
         elif not chat_configured(config):
+            if data["provider"] == "deepseek":
+                raise ProviderError("DeepSeek API Key 尚未配置，请填写 DEEPSEEK_API_KEY 后重启。")
             raise ProviderError("生成模型尚未配置完整。")
         elif data["provider"] == "ollama":
             response = _request_json(data["base"], "/api/tags", timeout=timeout)
@@ -254,7 +283,7 @@ def check_models(config):
             result["chat_ready"] = data["chat_model"] in names
         if not result["chat_ready"]:
             messages.append("生成模型尚未就绪或不在服务模型列表中。")
-        elif not callable(config.get("CHAT_CHECK_PROVIDER")):
+        elif data["provider"] == "deepseek" or not callable(config.get("CHAT_CHECK_PROVIDER")):
             probe = chat_json([{"role": "system", "content": 'Return only JSON {"ok":true} for a connection check.'},
                                {"role": "user", "content": "Check."}], config,
                               schema={"type": "object", "properties": {"ok": {"type": "boolean"}},

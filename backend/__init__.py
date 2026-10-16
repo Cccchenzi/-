@@ -99,10 +99,13 @@ def create_app(test_config: dict | None = None) -> Flask:
         AI_API_KEY=os.environ.get("AI_API_KEY", env.get("AI_API_KEY", "")),
         AI_BASE_URL=os.environ.get("AI_BASE_URL", env.get("AI_BASE_URL", "")),
         AI_MODEL=os.environ.get("AI_MODEL", env.get("AI_MODEL", "")),
+        DEEPSEEK_API_KEY=os.environ.get("DEEPSEEK_API_KEY", env.get("DEEPSEEK_API_KEY", "")),
+        DEEPSEEK_BASE_URL=os.environ.get("DEEPSEEK_BASE_URL", env.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")),
+        DEEPSEEK_MODEL=os.environ.get("DEEPSEEK_MODEL", env.get("DEEPSEEK_MODEL", "deepseek-flash")),
         AI_EMBED_MODEL=os.environ.get("AI_EMBED_MODEL", env.get("AI_EMBED_MODEL", "")),
         AI_EMBED_BASE_URL=os.environ.get("AI_EMBED_BASE_URL", env.get("AI_EMBED_BASE_URL", "")),
         AI_EMBED_API_KEY=os.environ.get("AI_EMBED_API_KEY", env.get("AI_EMBED_API_KEY", "")),
-        RAG_PROVIDER=os.environ.get("RAG_PROVIDER", env.get("RAG_PROVIDER", "auto")),
+        RAG_PROVIDER=os.environ.get("RAG_PROVIDER", env.get("RAG_PROVIDER", "deepseek")),
         EMBEDDING_PROVIDER=os.environ.get("EMBEDDING_PROVIDER", env.get("EMBEDDING_PROVIDER", "")),
         EMBEDDING_REVISION=os.environ.get("EMBEDDING_REVISION", env.get("EMBEDDING_REVISION", "")),
         OLLAMA_BASE_URL=os.environ.get("OLLAMA_BASE_URL", env.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")),
@@ -124,10 +127,12 @@ def create_app(test_config: dict | None = None) -> Flask:
         app.config.update(test_config)
     selected = str(app.config["RAG_PROVIDER"]).strip().lower()
     if selected == "auto":
-        selected = "openai" if app.config["AI_API_KEY"] else "local"
-    if selected not in {"local", "ollama", "openai", "chatgpt"}:
-        raise ValueError("RAG_PROVIDER must be auto, local, ollama, openai or chatgpt.")
+        selected = "deepseek" if app.config["DEEPSEEK_API_KEY"] else "openai" if app.config["AI_API_KEY"] else "local"
+    if selected not in {"local", "ollama", "openai", "deepseek", "chatgpt"}:
+        raise ValueError("RAG_PROVIDER must be auto, local, ollama, openai, deepseek or chatgpt.")
     app.config["RAG_PROVIDER"] = selected
+    if not app.config["EMBEDDING_PROVIDER"] and selected in {"deepseek", "chatgpt", "ollama"}:
+        app.config["EMBEDDING_PROVIDER"] = "ollama"
     if app.config["VECTOR_STORE"] is None:
         app.config["VECTOR_STORE"] = DenseVectorStore(app.config) if selected != "local" else LocalTfidfStore()
     if not callable(getattr(app.config["VECTOR_STORE"], "search", None)):
