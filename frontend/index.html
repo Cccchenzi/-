@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#136f63">
+  <meta name="description" content="知微 · 在你的个人知识库中查找、提问，并回到答案的出处。">
+  <title>知微 · 个人知识库</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" type="module"></script>
+</head>
+<body>
+  <div id="app" class="app-shell" hidden>
+    <aside class="sidebar" id="sidebar" aria-label="知识库和历史对话">
+      <a class="brand" href="/" aria-label="知微首页">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M8 5h9v8H8zm9 8h9v14h-9z" fill="currentColor"/><path d="M6 16h8v11H6zM20 5h6v5h-6z" fill="currentColor" opacity=".45"/></svg></span>
+        <span><strong>知微<span class="brand-dot">.</span></strong><small>个人知识库</small></span>
+      </a>
+      <button class="button primary new-chat-wide" id="new-chat"><span data-icon="plus"></span> 开始新对话 <span class="shortcut">N</span></button>
+      <div class="sidebar-section-title"><span>我的知识库</span><button class="icon-button" id="add-library" aria-label="新建知识库" title="新建知识库"><span data-icon="plus"></span></button></div>
+      <div id="library-list" class="library-list"></div>
+      <div class="sidebar-section-title history-title"><span>最近对话</span><span id="history-count" class="subtle-count">0</span></div>
+      <div id="session-list" class="session-list"></div>
+      <div class="sidebar-bottom">
+        <button class="help-link" id="help-button"><span data-icon="help"></span><span>使用指南</span><span data-icon="arrow-up-right"></span></button>
+        <button class="user-card" id="user-button" title="账户与退出登录"><span class="user-avatar" id="user-avatar">知</span><span class="user-info"><strong id="username">个人账户</strong><small>独立的个人知识空间</small></span><span data-icon="more"></span></button>
+      </div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar">
+        <div class="breadcrumbs"><button class="icon-button mobile-menu" id="menu-button" aria-label="展开侧栏"><span data-icon="menu"></span></button><span class="breadcrumb-parent">工作空间</span><span class="breadcrumb-divider">/</span><span data-icon="library" class="breadcrumb-icon"></span><strong id="current-library-name">我的知识库</strong></div>
+        <div class="topbar-actions"><button class="mode-pill" id="mode-button"><span class="status-dot"></span><span id="mode-label">正在连接</span><span data-icon="chevron-down"></span></button><button class="icon-button" id="toggle-sources" aria-label="切换资料面板" title="切换资料面板"><span data-icon="panel"></span></button></div>
+      </header>
+      <main class="conversation" id="conversation" aria-label="知识问答">
+        <div class="conversation-topline"><div><span class="section-eyebrow">KNOWLEDGE, CONNECTED</span><h1 id="conversation-title">知识问答</h1></div><button class="text-button" id="clear-conversation"><span data-icon="plus"></span> 新对话</button></div>
+        <div class="chat-scroll" id="chat-scroll">
+          <section class="welcome" id="welcome">
+            <div class="welcome-symbol" aria-hidden="true"><svg viewBox="0 0 80 80"><path d="M21 16h23v21H21z" fill="#187465"/><path d="M44 37h19v30H44z" fill="#187465"/><path d="M16 42h21v25H16z" fill="#90bcb0"/><path d="M51 16h12v13H51z" fill="#90bcb0"/><circle cx="67" cy="14" r="3" fill="#dfb269"/></svg></div>
+            <div class="welcome-kicker">让每一份资料，都有回应</div>
+            <h2>把知识，变成<span>答案。</span></h2>
+            <p id="welcome-description">上传你的资料，用自然语言提问。<br>从答案出发，随时回到原文。</p>
+            <div class="welcome-badges"><span><span data-icon="shield"></span> 账户空间隔离</span><span><span data-icon="quote"></span> 每条引用可追溯</span></div>
+            <div class="suggestion-grid" id="suggestion-grid"></div>
+            <button class="sample-link" id="import-samples"><span data-icon="sparkles"></span><span>还没有资料？导入示例，体验一次知识问答</span><span data-icon="arrow-right"></span></button>
+          </section>
+          <div class="messages" id="messages" aria-live="polite" aria-relevant="additions text"></div>
+        </div>
+        <div class="composer-zone">
+          <form class="composer" id="question-form">
+            <label class="sr-only" for="question">向当前知识库提问</label>
+            <textarea id="question" rows="1" maxlength="2000" placeholder="向你的知识库提问…" aria-describedby="composer-hint"></textarea>
+            <div class="composer-bottom"><span class="composer-library"><span data-icon="library"></span><span id="composer-library-name">当前知识库</span></span><div class="composer-controls"><span class="key-hint">Enter 发送 · Shift + Enter 换行</span><button type="submit" class="send-button" id="send-button" aria-label="发送问题" disabled><span data-icon="arrow-up"></span></button></div></div>
+          </form>
+          <p class="composer-hint" id="composer-hint">答案基于当前知识库；请结合引用原文核实重要信息。</p>
+        </div>
+      </main>
+    </div>
+    <aside class="source-panel" id="source-panel" aria-label="知识库资料与引用">
+      <div class="source-header"><span class="section-eyebrow">YOUR KNOWLEDGE</span><div class="source-title-row"><h2>知识库资料</h2><button class="icon-button" id="library-settings" title="知识库信息" aria-label="知识库信息"><span data-icon="more"></span></button></div><p id="library-description">收集资料，连接你的每一次思考。</p></div>
+      <div class="panel-tabs" role="tablist" aria-label="资料面板"><button id="documents-tab" class="panel-tab active" role="tab" aria-selected="true" aria-controls="documents-view">文档 <span id="document-count">0</span></button><button id="citations-tab" class="panel-tab" role="tab" aria-selected="false" aria-controls="citations-view">引用来源 <span id="citation-count">0</span></button></div>
+      <section id="documents-view" role="tabpanel" aria-labelledby="documents-tab" class="documents-view">
+        <button class="upload-zone" id="upload-zone"><span class="upload-icon" data-icon="upload"></span><strong>点击或拖拽上传文件</strong><span>PDF、TXT、Markdown (.md)</span><small>每批最多 10 个 · 单个最大 20 MB</small></button>
+        <input type="file" id="file-input" accept=".pdf,.txt,.md" multiple hidden>
+        <div class="document-list-heading"><span>全部文档</span><span id="document-total-size"></span></div>
+        <div class="document-list" id="document-list"></div>
+        <div class="library-stats"><div><strong id="stat-documents">0</strong><span>文档</span></div><div><strong id="stat-chunks">0</strong><span>知识片段</span></div><div><strong id="stat-sessions">0</strong><span>对话</span></div></div>
+        <div class="tip-card"><span data-icon="lightbulb"></span><p><strong>好答案，来自好资料</strong>为不同主题建立独立知识库，问题越具体，越容易找到相关原文。</p></div>
+      </section>
+      <section id="citations-view" role="tabpanel" aria-labelledby="citations-tab" class="citations-view" hidden><div id="citation-list"></div></section>
+      <div class="panel-footer"><span class="status-dot"></span> <span id="storage-label">资料保存在本机</span></div>
+    </aside>
+  </div>
+
+  <section class="auth-screen" id="auth-screen" aria-label="登录知微">
+    <div class="auth-story"><div class="auth-brand"><span class="brand-mark"><svg viewBox="0 0 32 32"><path d="M8 5h9v8H8zm9 8h9v14h-9z" fill="currentColor"/><path d="M6 16h8v11H6zM20 5h6v5h-6z" fill="currentColor" opacity=".45"/></svg></span><strong>知微.</strong></div><div class="auth-story-content"><span class="auth-eyebrow">A SPACE FOR YOUR KNOWLEDGE</span><h1>你读过的，<br>都能成为<br><em>你的答案。</em></h1><p>把散落的资料，整理成可提问、<br>可追溯的个人知识空间。</p><div class="auth-graphic" aria-hidden="true"><span class="graphic-block block-a"></span><span class="graphic-block block-b"></span><span class="graphic-block block-c"></span><span class="graphic-block block-d"></span><span class="graphic-line"></span></div></div><div class="auth-story-footer">收集 · 理解 · 连接</div></div>
+    <div class="auth-form-side"><form id="auth-form" class="auth-form"><div class="auth-top-note"><span class="status-dot"></span> 你的个人知识空间</div><h2 id="auth-title">欢迎回来</h2><p id="auth-description">登录知微，继续连接你的知识。</p><label for="auth-username">用户名</label><input id="auth-username" name="username" autocomplete="username" minlength="2" maxlength="32" placeholder="请输入用户名" required><label for="auth-password">密码</label><div class="password-wrap"><input id="auth-password" name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" placeholder="请输入密码（至少 8 位）" required><button type="button" class="icon-button" id="toggle-password" aria-label="显示密码"><span data-icon="eye"></span></button></div><p class="auth-error" id="auth-error" role="alert"></p><button type="submit" class="button primary auth-submit" id="auth-submit">登录 <span data-icon="arrow-right"></span></button><p class="auth-switch"><span id="auth-switch-description">第一次使用？</span><button type="button" id="auth-toggle">创建账户</button></p><div class="auth-privacy"><span data-icon="shield"></span><p>每个账户拥有独立知识库。<br>本地检索模式下，资料无需发送到外部模型。</p></div></form><span class="auth-copyright">知微 · 看见知识的关联</span></div>
+  </section>
+  <div class="loading-screen" id="loading-screen"><span class="spinner"></span><p>正在连接你的知识空间…</p></div>
+  <div class="sidebar-shade" id="sidebar-shade" hidden></div>
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+  <dialog class="modal" id="modal" aria-labelledby="modal-title"><div class="modal-heading"><h2 id="modal-title"></h2><button class="icon-button" id="modal-close" aria-label="关闭弹窗"><span data-icon="close"></span></button></div><div class="modal-body" id="modal-body"></div></dialog>
+  <dialog class="preview-modal" id="preview-modal" aria-labelledby="preview-title"><div class="modal-heading"><div><span class="section-eyebrow">SOURCE PREVIEW</span><h2 id="preview-title">原文预览</h2></div><button class="icon-button" id="preview-close" aria-label="关闭原文预览"><span data-icon="close"></span></button></div><div id="preview-body" class="preview-body"></div></dialog>
+</body>
+</html>
