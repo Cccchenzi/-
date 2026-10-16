@@ -1,91 +1,78 @@
-# 知微 · 个人知识库问答助手
+# 知微
 
-学生项目场景池项目 02：上传本人资料，自动分块和语义向量化，检索后生成带原文出处的回答，按知识库保存多轮会话。Python Flask + SQLite + 原生网页前端，无需前端构建。
+个人知识库问答助手。上传学习资料后，通过语义检索和 DeepSeek 生成带原文引用的回答，支持多轮追问与会话历史。
 
-当前默认方案为 **DeepSeek API 生成回答＋本地 Qwen 语义向量**，已实现向量持久化、多轮检索改写和逐条引文校验。2026-10-16 已完成 DeepSeek 真实合成验收 12/12；结果只覆盖所列案例，不代表所有资料均能正确回答。首次安装仍需填写自己的密钥，仓库不包含凭据。原 ChatGPT 会员实测另作历史记录。TF-IDF 关键词检索＋原文摘录是明确标识的降级模式，不能算完整 AI RAG。
+**Flask · SQLite · 原生 JavaScript · DeepSeek · Ollama**
 
-## 本机启动与首次安装
+## 功能
 
-已配置的电脑直接双击 `start.bat`，或在 VS Code 打开 `zhiwei.code-workspace` 后按 Ctrl+Shift+B。地址为 http://127.0.0.1:8765 。安装 Python / Python Debugger 扩展后也可按 F5。
+- **资料管理**：按知识库批量上传 PDF、Markdown、TXT，自动解析、分块和建立向量索引。
+- **资料问答**：基于当前知识库回答问题，支持跨文档检索、文章概览和多轮追问。
+- **引用溯源**：回答关联原文片段，可查看来源文件、页码或行号。
+- **会话历史**：按账户和知识库保存对话、引用及当次回答模式。
+- **模型选择**：默认使用 DeepSeek Flash，可在界面切换当前 API 支持的模型；向量模型在本机运行。
 
-首次下载项目或换电脑：
+## 快速开始
 
-1. 安装 Python 3.11+，运行 `setup.bat` 安装依赖。
-2. 运行 `setup-ai.bat`。下载经过 SHA-256 核验的官方 Ollama 运行时及 `qwen3-embedding:0.6b` 向量模型，首次合计约 2.1GB；解压另需空间。运行时在 `.runtime/`，模型在 `data/ollama-models/`，不提交 Git。
-3. 在 [DeepSeek 开放平台](https://platform.deepseek.com/api_keys) 申请密钥，将其填入本地 `.env` 的 `DEEPSEEK_API_KEY=` 后面。若 `.env` 不存在，先复制 `.env.example`。
-4. 运行 `start.bat`，创建或登录知微账户，在“模型与索引”点击“检查模型连接”，确认生成和嵌入分别就绪。
-5. 创建知识库，批量上传 PDF / Markdown / TXT。所有片段索引完成后提问；旧资料可点击“重建向量索引”。
+环境：Windows x64、Python 3.11+。首次安装需要联网下载依赖、Ollama 和向量模型。
 
-默认使用费用较低的 **Flash（`deepseek-flash`）**；只有在网页中手动选择并应用其他模型时才切换，不会自动升级到 Pro。具体费用以 [DeepSeek 官方价格](https://api-docs.deepseek.com/quick_start/pricing/) 为准。服务地址为 `https://api.deepseek.com`，取得密钥后只需填写 `DEEPSEEK_API_KEY` 并重启，无需在网页输入密钥。尚无密钥时可以管理、上传和本地向量化资料，问答会明确显示未配置或摘录降级，不会调用原会员连接。
+### 1. 安装
 
-本地向量化不发送资料给外部服务；使用 DeepSeek 问答时，**当前问题、检索片段及必要历史会发送给 DeepSeek**。密钥只由后端读取，页面不显示，`.env` 不提交仓库。生成服务的计费、额度和数据处理以服务商规则为准。
-
-## 五项项目要求
-
-| 需求 | 当前实现 | 核对方法 |
-| --- | --- | --- |
-| PDF / MD / TXT 批量上传 | 每批最多 10 份、每份 20MiB；逐文件反馈；同库去重 | 同时上传三种格式，查看片段数和错误提示 |
-| 切片向量化、Chroma 升级点 | 约 750 字符分块、120 重叠；稠密嵌入保存 SQLite；模型指纹防止混用；预留 VectorStore | 文件显示索引完成，重启仍可检索；Chroma 本身不是必装组件 |
-| 本人文档 AI 问答、多轮 | 当前账户/库内语义检索；模型理解追问并生成结构化结论 | 用同义表达、跨文档问题和指代追问测试；实际模式必须为 AI 生成 |
-| 引用溯源 | 每条生成结论绑定片段；引文必须逐字存在；可查文件、页/行和原文 | 非法引文拒绝展示生成答案 |
-| 按知识库保存历史 | SQLite 保存会话、消息、引用及实际检索/生成模式 | 切换库、打开历史、重启应用 |
-
-资料不足时拒答；服务失败或引文无效时明确降级为原文摘录。**逐字引文校验不能证明概括一定正确，更不能保证零幻觉**，仍需核对结论是否被原文支持。扫描 PDF 需先 OCR，DOCX 不属于上传格式。
-
-“这是什么文章”“概括这篇论文”等整篇概览会优先使用文档开头的标题、摘要或首段，并注明范围；多份文档无法确定目标时会要求写出文件名。实验结果、局限性及指代追问继续检索具体证据。PDF引文若仅连续空白排版不同，可映射回真实原文片段；数字、标点、词序等变化仍拒绝。新回答的概览范围和故障提示会随历史保存，旧记录没有保存的故障细节不会补猜。
-
-## 模型配置
-
-密钥、服务地址和默认模型保存在项目 `.env`；修改这些部署配置后重启。模板为 `.env.example`，密钥和令牌不要写入源代码。
-
-已配置 DeepSeek 后，可在网页“模型与检索状态”刷新可用模型、选择并点击“使用此模型”。列表来自当前密钥可访问的服务目录，选择按知微账户保存在本机数据库；切换无需修改 `.env` 或重启。应用成功会使该账户的旧检查结果失效，应重新检查模型连接。目录读取或服务端校验失败不覆盖原选择；保存响应未收到时，页面会重新读取状态确认结果。
-
-模型切换影响之后发起的问答；已经开始的一次追问使用同一模型完成检索改写和生成。新成功的 DeepSeek AI 回答显示当次使用的模型，历史不会随当前选择改写；旧消息、摘录和拒答不补造模型标签。切换生成模型不改变本地向量模型，也无需为此重建索引。不同账户的选择相互独立，但同一部署仍共用本地配置的API密钥和额度。账户已保存的选择不会因重启而恢复成默认 Flash。
-
-默认 DeepSeek＋本地向量方案：
-
-```dotenv
-RAG_PROVIDER=deepseek
-DEEPSEEK_API_KEY=
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-flash
-EMBEDDING_PROVIDER=ollama
-OLLAMA_BASE_URL=http://127.0.0.1:11434
-OLLAMA_EMBED_MODEL=qwen3-embedding:0.6b
+```powershell
+git clone https://github.com/Cccchenzi/-.git zhiwei
+cd zhiwei
+.\setup.bat
+.\setup-ai.bat
 ```
 
-完全本地：运行 `powershell -File setup-ai.ps1 -WithLocalChat`，把 RAG_PROVIDER 改为 ollama。问答使用 qwen3:4b，额外下载约 2.5GB，无需会员登录。
+`setup-ai.bat` 会安装本地向量服务，并在 `.env` 不存在时从模板创建配置。
 
-其他兼容 API：设置 RAG_PROVIDER=openai，填写 AI_API_KEY、AI_BASE_URL、AI_MODEL；默认继续使用本地嵌入。若改在线嵌入，再单独配置 EMBEDDING_PROVIDER=openai、AI_EMBED_MODEL、AI_EMBED_BASE_URL / AI_EMBED_API_KEY。DeepSeek 聊天密钥不用于嵌入接口。远端必须 HTTPS，本机允许 HTTP。
+### 2. 配置密钥
 
-可选会员方式：显式设置 RAG_PROVIDER=chatgpt 并重启，才显示官方会员登录入口。已有授权保留在本机加密存储中，当前 DeepSeek 配置不会使用它。
+在 [DeepSeek 开放平台](https://platform.deepseek.com/api_keys) 获取 API 密钥，填入项目根目录的 `.env`：
 
-RAG_PROVIDER=local 明确选择离线词法摘录且不调用模型。看到“摘录”意味着本次没有完成 AI 生成。
+```dotenv
+DEEPSEEK_API_KEY=填入你的密钥
+```
 
-## 验证
+默认回答模型为 `deepseek-flash`，向量模型为 `qwen3-embedding:0.6b`。其他参数和模型接入方式见[配置说明](docs/configuration.md)。
+
+### 3. 启动
+
+```powershell
+.\start.bat
+```
+
+浏览器打开 <http://127.0.0.1:8765>。也可在 VS Code 中打开 `zhiwei.code-workspace`，安装工作区推荐的 Python 扩展后，按 **F5** 调试或 **Ctrl+Shift+B** 启动。
+
+注册账户 → 检查模型连接 → 创建知识库 → 上传资料 → 等待索引完成 → 提问并核对引用。初次体验可使用“导入示例”。
+
+## 项目结构
+
+```text
+backend/       API、文档解析、检索与模型调用
+frontend/      网页界面
+sample_docs/   演示资料
+tests/         自动化测试
+tools/         验证脚本
+docs/          配置、架构、需求与使用说明
+coursework/    课程需求报告与交互原型
+```
+
+运行产生的数据、模型和密钥保存在 `data/`、`.runtime/`、`.env`，均不提交 Git。
+
+## 文档与测试
+
+- [配置说明](docs/configuration.md) · [架构说明](docs/architecture.md) · [使用演示](docs/demo.md)
+- [需求文档](docs/requirements.md) · [课程报告与原型](coursework/README.md)
+- [验证工具](tools/README.md) · [验证记录](docs/rag-validation.md)
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe tools/check_boundaries.py
 ```
 
-本轮回归 108/108 通过，使用合成数据和模拟远端服务，覆盖隔离、向量持久化、迁移、概览、原文引文、故障历史、授权及账户模型选择；后续运行数量以实际输出为准。另有 14 项实际容量/长度边界检查。它们不能替代真实模型验收。
+## 使用边界
 
-配置密钥并检查连接后，可运行 `.\.venv\Scripts\python.exe tools/check_real_rag.py --provider deepseek`，使用临时合成资料复验真实语义检索、多轮生成、拒答和引用。已记录的 DeepSeek 合成12/12、模型选择真实验收10/10、单份实际PDF最终5/5、长会话布局 Edge 26/26、模型选择界面 Edge 20/20 分开计数；模型选择实测包含 Flash 与 Pro 各一次带真实引文生成，两组界面检查使用合成 API 响应。复现过程中曾出现生成失败，最终通过不代表请求从未失败。调用会消耗所配置 API 的额度，降级不会冒充通过。结果、范围及历史会员记录见 [RAG 修订验收](docs/rag-validation.md)。
+支持可提取文字的 PDF、Markdown 和 TXT，每批最多 10 份、单份 20 MiB；扫描 PDF 需先做 OCR。资料不足时拒答，生成失败时明确显示原文摘录。引用经过原文校验，结论仍需人工核对。
 
-## 工程与课程材料
-
-| 目录 | 用途 |
-| --- | --- |
-| backend/ | API、切片、向量、模型与 ChatGPT 授权 |
-| frontend/ | 中文网页、资料、模型状态、问答与引用 |
-| sample_docs/ | 三份虚构教学样例 |
-| tests/、tools/ | 回归、边界、真实模型验证 |
-| docs/ | 需求、架构、演示、验收 |
-| coursework/ | 需求报告、离线低保真原型、答辩讲稿 |
-| .vscode/ | 启动、调试、测试与模型安装任务 |
-| data/、.runtime/ | 本机数据和模型，不提交 |
-
-课程入口：[报告与原型](coursework/README.md)、[架构](docs/architecture.md)、[演示](docs/demo.md)。小组编号、成员姓名/学号及提交日期仍需填写。原型使用模拟数据；学生访谈、用户体验和性能指标不能用代码测试代替。
-
-仓库：[Cccchenzi/-](https://github.com/Cccchenzi/-)。默认只监听本机；停止服务后备份 data/。授权文件绑定当前 Windows 账户，不能视为跨电脑免登录凭据。不要把自己的文档、数据库、模型或 .env 上传 GitHub。
+向量化在本机完成；使用 DeepSeek 问答时，问题、检索片段和必要历史会发送给 DeepSeek。应用默认仅监听本机地址。

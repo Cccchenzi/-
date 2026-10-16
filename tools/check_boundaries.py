@@ -53,7 +53,7 @@ def main() -> int:
         "executed_at_utc": datetime.now(timezone.utc).isoformat(),
         "runtime": sys.version.split()[0],
         "environment": "Flask test client; isolated TemporaryDirectory; external model disabled",
-        "scope": "Supplementary boundary checks, separate from the 28 unittest methods",
+        "scope": "Supplementary boundary checks, separate from the unittest suite",
         "cases": [],
     }
 

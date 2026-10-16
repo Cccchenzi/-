@@ -1,84 +1,35 @@
-# 验证与本地模型工具
+# 开发工具
 
-从项目根目录使用已安装依赖的 Python 环境运行。回归、边界、真实模型及界面检查验证不同层次，应分别记录；当前结果见 [RAG 修订验收](../docs/rag-validation.md)。
+在项目根目录运行。Python 工具使用 `setup.bat` 创建的虚拟环境。
 
-## 后端回归
+## Python 检查
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-```
-
-`tests/` 覆盖业务、语义索引、结构化引文、故障、数据隔离、DeepSeek适配和可选会员授权边界。本轮108/108通过，包含12项概览/引文回归和10项模型选择回归；后者覆盖目录校验、账户隔离、重启持久化、检查缓存失效，以及追问改写期间切换模型仍使用同一请求快照。使用临时数据和模拟远端服务，不需要真实会员或API Key；后续通过数量以实际输出为准，不能视为DeepSeek真实接通或问答准确率。
-
-## 精确边界：check_boundaries.py
-
-```powershell
 .\.venv\Scripts\python.exe tools/check_boundaries.py
-```
-
-该脚本独立执行 14 项检查，不属于 `tests/` 的回归数量，不需要启动网页服务。结果 JSON 默认写入系统临时目录的新文件并打印位置；全通过退出码为 `0`，失败为 `1`。可通过 `--output` 指定报告文件：
-
-```powershell
-.\.venv\Scripts\python.exe tools/check_boundaries.py --output "$env:TEMP\zhiwei-boundary-results.json"
-```
-
-| 边界 | 条件与预期 |
-| --- | --- |
-| 批量上传 | 10 个内容不同的 TXT 成功；11 个拒绝且不增加资料 |
-| 文件大小 | 实际 20 MiB（20,971,520 字节）有效 PDF 成功；大 1 字节被拒绝 |
-| 用户名长度 | 2、32 个 ASCII 字符成功；1、33 个被拒绝 |
-| 密码长度 | 8、128 个 ASCII 字符成功；7、129 个被拒绝 |
-| 问题长度 | 空库接受 2000 字符并保存拒答消息；2001 字符被拒绝且不写入消息 |
-
-20 MiB 文件是现场构造的单页文本 PDF，以无害空白扩充字节并保留正确对象偏移。它验证实际上传上限，不代表大篇幅 PDF 的解析性能；部分快速回归使用缩小常量，该脚本补充实际上限端点。
-
-脚本强制本地摘录，使用临时数据库和合成资料，完成后清理；不读取用户知识库或调用外部模型。报告不保存密码、密钥或用户文件内容。它不覆盖所有 PDF 类型、提取字符/页数上限、检索质量、性能或并发。
-
-## 真实模型：check_real_rag.py
-
-该脚本使用应用测试客户端，但实际请求选定的生成和嵌入模型。它读取项目 `.env` 或环境变量中的配置，在临时数据库创建合成资料；不读取、修改或删除正常应用的数据目录。运行前须自行安装、启动或配置对应服务。
-
-网页模型选择按正式知微账户保存；本脚本创建临时账户，不读取正式账户的已选模型。需要复验某个模型时，使用 `--chat-model <模型ID>` 明确指定；未指定时使用部署默认配置，项目默认是费用较低的 `deepseek-flash`。模型ID应先从网页刷新目录确认，检查结果只适用于本次使用的模型。
-
-```powershell
-# 默认DeepSeek：先在本地.env填DEEPSEEK_API_KEY，嵌入保持EMBEDDING_PROVIDER=ollama
 .\.venv\Scripts\python.exe tools/check_real_rag.py --provider deepseek
-
-# 已安装本地生成和嵌入模型，并确认 EMBEDDING_PROVIDER=ollama
-.\.venv\Scripts\python.exe tools/check_real_rag.py --provider ollama
-
-# 已在 .env 配置兼容 API 与嵌入服务；不要把密钥放进命令行
-.\.venv\Scripts\python.exe tools/check_real_rag.py --provider openai
 ```
 
-默认DeepSeek配置为 `DEEPSEEK_BASE_URL=https://api.deepseek.com` 和 `DEEPSEEK_MODEL=deepseek-flash`，密钥仅取独立的 `DEEPSEEK_API_KEY`。2026-10-16 已记录该配置加本机 `qwen3-embedding:0.6b` 的真实合成验收 12/12；临时数据已清理。新安装仍需配置自己的密钥后复验，不能复用他人凭据，也不以历史会员结果替代DeepSeek检查。
+| 命令 | 作用 / 准备 |
+| --- | --- |
+| `unittest discover` | 业务、隔离、向量、引文、授权及模型选择回归；使用模拟服务，无需 API Key |
+| `check_boundaries.py` | 实际上传字节、批量数量及输入长度边界；使用临时数据，不调用模型 |
+| `check_real_rag.py` | 真实嵌入、检索、生成、多轮和引用；先按[模型配置](../docs/configuration.md)准备服务，本地嵌入需 Ollama 已运行 |
 
-可用参数包括 `--provider`、`--ollama-url`、`--base-url`、`--chat-model`、`--embedding-provider`、`--embedding-model`、`--output`；完整参数用 `--help` 查看。在DeepSeek模式中，`--base-url` 覆盖 `DEEPSEEK_BASE_URL`，`--chat-model` 覆盖 `DEEPSEEK_MODEL`。嵌入默认使用本地Ollama，`--embedding-provider ollama/openai` 可独立选择；`--embedding-model` 覆盖所选嵌入模型，本地对应 `OLLAMA_EMBED_MODEL`。远程服务会接收合成问题、证据及必要上下文，并可能产生API费用；不要把密钥放在命令行。
+独立脚本的 JSON 默认写入系统临时目录，可用 `--output <JSON路径>` 指定位置。真实模型检查使用临时合成资料，可能产生 API 费用；支持 `--provider deepseek/ollama/openai`，不支持 `chatgpt`。它使用部署默认配置，不读取正式账户的模型选择；指定模型可加 `--chat-model <模型ID>`。完整参数使用 `--help` 查看。
 
-检查要求真实向量持久化、同义检索、跨文档生成、多轮指代及有效逐字引文，同时核对拒答、账户/知识库隔离和删除后检索。摘录降级不能作为正向生成通过。JSON 报告默认写入系统临时目录，可用 `--output` 指定位置；数量和结果以实际报告为准。
+## 浏览器检查
 
-**独立脚本支持 `deepseek`、`ollama` 与 `openai`，不支持 `chatgpt`。** 不要复制会员令牌或授权文件到临时数据库。历史会员验收在本人已授权账户内新建合成库完成，范围见[验收记录](../docs/rag-validation.md)；其11项不属于DeepSeek验收。
-
-## 长会话界面检查
-
-`check_chat_layout.cjs` 用实际 Edge 加载静态前端和合成 API 响应。本轮先复现旧版长回答挤出输入框，再完成 26 项检查：桌面与手机长会话、追问、引用弹窗、消息独立滚动、短视口多行输入、历史概览/故障提示，以及通知不遮挡输入和发送按钮的命中测试。
+需要 Node.js、Playwright 和 Microsoft Edge。安装工具依赖后运行：
 
 ```powershell
-node tools/check_chat_layout.cjs --output "$env:TEMP\zhiwei-layout-check"
+npm install --no-save --package-lock=false playwright
+node tools/check_chat_layout.cjs
+node tools/check_model_selector.cjs
 ```
 
-需要 Node.js、Playwright 和本机 Edge；可通过 `PLAYWRIGHT_MODULE` 指向现有 Playwright 模块，或用 `EDGE_EXECUTABLE` 指定 Edge。默认结果写入临时目录，`--output` 可指定截图和JSON位置。该检查不读取用户资料、不请求模型，也不是完整浏览器端真实问答验收；与后端回归、真实模型和容量边界分别记录。
+两个脚本用实际无头 Edge 和模拟 API，分别检查长会话布局及模型选择交互，无需启动后端。JSON 和截图默认写入系统临时目录，可用 `--output <目录>` 指定位置。`PLAYWRIGHT_MODULE` 可指定已有模块路径，`EDGE_EXECUTABLE` 可指定 Edge 可执行文件。
 
-## 模型选择界面检查
+## 本地运行时
 
-`check_model_selector.cjs` 用实际无头 Edge 加载前端，所有API由浏览器中的合成响应提供，外部请求被阻止。本轮20/20通过并保存3张截图。覆盖默认 Flash 不自动切换、目录刷新/空列表/故障、显式应用、保存响应丢失后的状态确认、历史模型标签，以及登出重登期间的过时目录、保存和401响应；也检查390px窄屏和生成已配置但向量配置未完成的状态。此脚本不访问真实账户或模型，不能替代真实API验收。
-
-```powershell
-node tools/check_model_selector.cjs --output "$env:TEMP\zhiwei-model-selector-check"
-```
-
-依赖和环境变量与长会话检查相同；默认报告和截图写入系统临时目录。实际通过数量以该次 `summary.json` 为准，不能与真实模型选择10项或后端回归合并成准确率。
-
-## 本机运行时：local_runtime.py
-
-此模块由启动流程调用，用于发现或启动已安装的本机Ollama服务；它不是验收脚本，也不会在应用启动时自动下载模型。首次安装使用项目根目录 `setup-ai.bat`，运行时与模型文件不提交Git。默认只需安装 `qwen3-embedding:0.6b` 供DeepSeek方案本地向量化；完全本地生成的额外配置见[README](../README.md)。
+`local_runtime.py` 由 `run.py` 调用，发现或启动已安装的本机 Ollama，不下载模型。首次安装运行项目根目录的 `setup-ai.bat`。
